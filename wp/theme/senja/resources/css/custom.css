@@ -206,6 +206,11 @@
         margin: 0;
     }
 
+    /* wpautop puts a <br> between each label and its input; the label is already a block. */
+    :where(form br) {
+        display: none;
+    }
+
     :where(label) {
         display: block;
         font-size: var(--text-sm);
