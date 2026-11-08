@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/theme.json",
+  "version": 3,
+  "settings": {
+    "layout": { "contentSize": "768px", "wideSize": "1200px" },
+    "color": {
+      "palette": [
+        { "name": "Espresso", "slug": "espresso", "color": "#2a1c15" },
+        { "name": "Cream", "slug": "cream", "color": "#fbf5ec" },
+        { "name": "Terracotta", "slug": "terracotta", "color": "#c4552b" },
+        { "name": "Dusk", "slug": "dusk", "color": "#4a3a63" }
+      ]
+    }
+  }
+}

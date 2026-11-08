@@ -24,6 +24,9 @@ wp option update blogdescription "Hand-brewed coffee in the heart of Malang"
 wp option update timezone_string "Asia/Jakarta"
 wp rewrite structure ""
 
+# Theme built on TailPress (see wp/theme/senja); the image ships it.
+wp theme activate senja
+
 # The one and only custom plugin of this site.
 cp -r /opt/pb/plugin-seed/senja-coffee wp-content/plugins/
 wp plugin activate senja-coffee

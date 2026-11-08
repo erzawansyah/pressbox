@@ -1,0 +1,23 @@
+@utility container {
+    max-width: 1200px;
+    margin-inline: auto;
+    padding-inline: 1.25rem;
+
+    @media (min-width: 782px) {
+        padding-inline: 2rem;
+    }
+}
+
+@utility alignfull {
+    width: 100vw;
+    margin-inline: calc(50% - 50vw) !important;
+}
+
+@utility alignwide {
+    width: 100%;
+    max-width: none;
+}
+
+@utility aligncenter {
+    margin-inline: auto !important;
+}

@@ -1,0 +1,23 @@
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "senja/theme",
+    "description": "Senja Coffee theme, built on the TailPress boilerplate.",
+    "type": "project",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Jeffrey van Rossum",
+            "email": "jeffrey@vanrossum.dev"
+        }
+    ],
+    "require": {
+        "php": ">=8.0.2",
+        "tailpress/framework": "^5.0.5",
+        "automattic/jetpack-autoloader": "^2.10"
+    },
+    "config": {
+        "allow-plugins": {
+            "automattic/jetpack-autoloader": true
+        }
+    }
+}

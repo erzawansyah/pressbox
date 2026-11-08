@@ -1,5 +1,20 @@
 # One image for both the demo "live" site and every disposable sandbox.
 # WordPress + WP-CLI + SQLite (no MySQL container needed, DB is one file = easy clone).
+
+# The Senja theme is built on TailPress: Composer pulls the TailPress framework and Vite
+# compiles the Tailwind CSS. Both run here, so the repo holds theme source only.
+FROM composer:2 AS theme-php
+WORKDIR /theme
+COPY theme/senja/composer.json theme/senja/composer.lock ./
+RUN composer install --no-dev --no-interaction --no-progress --ignore-platform-reqs
+
+FROM node:22-alpine AS theme-assets
+WORKDIR /theme
+COPY theme/senja/package.json theme/senja/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY theme/senja/ ./
+RUN npx vite build
+
 FROM wordpress:cli-php8.2
 
 USER root
@@ -21,6 +36,9 @@ RUN php -d memory_limit=1024M /usr/local/bin/wp core download --allow-root --pat
 
 # Generic wp-config: no live credentials ever. Salts are generated per container at start.
 COPY --chown=www-data:www-data wp-config.php /srv/wordpress/wp-config.php
+COPY --chown=www-data:www-data theme/senja/ /srv/wordpress/wp-content/themes/senja/
+COPY --from=theme-php --chown=www-data:www-data /theme/vendor /srv/wordpress/wp-content/themes/senja/vendor
+COPY --from=theme-assets --chown=www-data:www-data /theme/dist /srv/wordpress/wp-content/themes/senja/dist
 COPY pb/ /opt/pb/
 # Sandboxes mount an empty size-capped tmpfs over wp-content; entry.sh seeds it from this copy.
 RUN chmod +x /opt/pb/*.sh && cp -a /srv/wordpress/wp-content /opt/pb/wp-content-seed

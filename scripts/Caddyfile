@@ -1,0 +1,15 @@
+# HTTPS front for the three public origins (docker compose --profile https).
+# Caddy obtains and renews Let's Encrypt certificates for each host on its own.
+# The preview stays on its own host so sandbox JavaScript never shares an origin with the app.
+
+{$APP_HOST} {
+	reverse_proxy control:3000
+}
+
+{$PREVIEW_HOST} {
+	reverse_proxy control:3001
+}
+
+{$LIVE_HOST} {
+	reverse_proxy live:8080
+}

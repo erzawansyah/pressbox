@@ -1,0 +1,14 @@
+@import 'tailwindcss';
+@import './theme.css';
+@import './utilities.css';
+@import './custom.css' layer(components);
+
+@layer base {
+    *,
+    ::after,
+    ::before,
+    ::backdrop,
+    ::file-selector-button {
+        border-color: color-mix(in srgb, var(--color-espresso) 15%, transparent);
+    }
+}

@@ -9,6 +9,8 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 if command -v ufw >/dev/null; then
   ufw allow 22/tcp
+  ufw allow 80/tcp
+  ufw allow 443/tcp
   ufw allow 8080/tcp
   ufw allow 8300/tcp
   ufw allow 8301/tcp

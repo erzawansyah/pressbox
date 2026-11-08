@@ -46,6 +46,27 @@ services:
       - live
     restart: unless-stopped
 
+  # Optional HTTPS front with one host per origin: docker compose --profile https up -d.
+  # Set APP_HOST, PREVIEW_HOST, LIVE_HOST and the matching https:// *_URL values in .env.
+  proxy:
+    image: caddy:2.8-alpine
+    container_name: pressbox-proxy
+    profiles: ["https"]
+    environment:
+      APP_HOST: ${APP_HOST:-}
+      PREVIEW_HOST: ${PREVIEW_HOST:-}
+      LIVE_HOST: ${LIVE_HOST:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./scripts/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - control
+      - live
+    restart: unless-stopped
+
 networks:
   # Sandboxes live only here. internal: no gateway, so no internet and no cloud metadata endpoint.
   # The live site is NOT attached to this network.
@@ -55,3 +76,4 @@ networks:
 
 volumes:
   live_wp_content:
+  caddy_data:

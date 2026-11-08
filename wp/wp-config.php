@@ -19,6 +19,16 @@ $pb_home = getenv( 'PB_HOME' ) ?: 'http://localhost:8080';
 define( 'WP_HOME', rtrim( $pb_home, '/' ) );
 define( 'WP_SITEURL', rtrim( $pb_home, '/' ) );
 
+// TLS ends at the reverse proxy and PHP sees plain HTTP, so state the public scheme.
+if ( str_starts_with( $pb_home, 'https://' ) ) {
+	$_SERVER['HTTPS'] = 'on';
+}
+
+// TLS ends at the reverse proxy; PHP sees plain HTTP, so tell WordPress the public scheme.
+if ( str_starts_with( $pb_home, 'https://' ) ) {
+	$_SERVER['HTTPS'] = 'on';
+}
+
 if ( file_exists( '/tmp/pb-salts.php' ) ) {
 	require '/tmp/pb-salts.php';
 }
