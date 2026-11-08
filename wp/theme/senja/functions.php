@@ -21,7 +21,8 @@ function tailpress(): TailPress\Framework\Theme {
 				)
 				->enqueueAssets()
 		)
-		->menus( fn( $manager ) => $manager->add( 'primary', __( 'Primary Menu', 'senja' ) ) )
+		// A plain label: translating it here would load the text domain before init.
+		->menus( fn( $manager ) => $manager->add( 'primary', 'Primary Menu' ) )
 		->themeSupport( fn( $manager ) => $manager->add( array( 'title-tag', 'align-wide', 'responsive-embeds', 'html5' => array( 'search-form', 'gallery', 'caption' ) ) ) );
 }
 

@@ -8,8 +8,9 @@ docker volume rm pressbox_live_wp_content
 docker compose up -d live
 echo "Waiting for the demo site to seed..."
 for attempt in $(seq 1 60); do
-  if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ | grep -q 200; then
-    echo "Demo site is clean again: http://localhost:8080"
+  # 200, or a redirect to the public https:// address when the HTTPS front is on.
+  if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ | grep -qE '^(200|301|302)$'; then
+    echo "Demo site is clean again."
     exit 0
   fi
   sleep 1
