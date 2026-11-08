@@ -1,0 +1,6 @@
+# Test override: run the control plane in scripted mode (no LLM calls, no token cost).
+# docker compose -f docker-compose.yml -f scripts/compose.scripted.yml up -d control
+services:
+  control:
+    environment:
+      LLM_API_KEY: ""

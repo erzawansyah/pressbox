@@ -1,47 +1,51 @@
 #!/bin/sh
-# Seeds the demo "live" site once (idempotent). Runs as www-data inside the live container.
+# Seeds the demo production site (Senja Coffee) once; later boots are a no-op.
+# Runs as www-data inside the live container.
 set -e
 cd /var/www/html
 
 if wp core is-installed >/dev/null 2>&1; then
-  echo "[seed] Situs live sudah ada, lewati seed."
+  echo "[seed] Site already installed, skipping seed."
   exit 0
 fi
 
-echo "[seed] Memasang situs demo Kedai Kopi Senja..."
+echo "[seed] Installing the Senja Coffee demo site..."
 mkdir -p wp-content/database wp-content/plugins
 
 wp core install \
   --url="${PB_HOME:-http://localhost:8080}" \
-  --title="Kedai Kopi Senja" \
-  --admin_user=pemilik \
+  --title="Senja Coffee" \
+  --admin_user=owner \
   --admin_password="${LIVE_ADMIN_PASSWORD:-senja-demo-2026}" \
-  --admin_email=pemilik@kedaisenja.example \
+  --admin_email=owner@senjacoffee.example \
   --skip-email
 
-wp option update blogdescription "Kopi seduh manual di sudut kota"
+wp option update blogdescription "Hand-brewed coffee in the heart of Malang"
 wp option update timezone_string "Asia/Jakarta"
-wp option update date_format "j F Y"
 wp rewrite structure ""
 
 # The one and only custom plugin of this site.
-cp -r /opt/pb/plugin-seed/kedai-senja-custom wp-content/plugins/
-wp plugin activate kedai-senja-custom
+cp -r /opt/pb/plugin-seed/senja-coffee wp-content/plugins/
+wp plugin activate senja-coffee
 
-# Remove default sample content.
+# Remove WordPress sample content.
 wp post delete 1 --force >/dev/null 2>&1 || true
 wp post delete 2 --force >/dev/null 2>&1 || true
 
-BERANDA=$(wp post create --post_type=page --post_status=publish --post_title="Beranda" --post_name=beranda --menu_order=1 --post_content="$(cat /opt/pb/content/beranda.html)" --porcelain)
-wp post create --post_type=page --post_status=publish --post_title="Menu" --post_name=menu --menu_order=2 --post_content="$(cat /opt/pb/content/menu.html)" --porcelain >/dev/null
-wp post create --post_type=page --post_status=publish --post_title="Tentang" --post_name=tentang --menu_order=3 --post_content="$(cat /opt/pb/content/tentang.html)" --porcelain >/dev/null
-wp post create --post_type=page --post_status=publish --post_title="Kontak" --post_name=kontak --menu_order=4 --post_content="$(cat /opt/pb/content/kontak.html)" --porcelain >/dev/null
+page() {
+  wp post create --post_type=page --post_status=publish --post_title="$1" --post_name="$2" --menu_order="$3" \
+    --post_content="$(cat "/opt/pb/content/$2.html")" --porcelain
+}
+HOME_ID=$(page "Home" home 1)
+page "Menu" menu 2 >/dev/null
+page "About" about 3 >/dev/null
+page "Contact" contact 4 >/dev/null
 
 wp option update show_on_front page
-wp option update page_on_front "$BERANDA"
+wp option update page_on_front "$HOME_ID"
 
-# Settings that look like real secrets, so the sandbox sanitizer has something to redact in the demo.
-wp option add kss_payment_server_key "live-server-key-DEMO-7f3a91" >/dev/null
-wp option add kss_smtp_password "smtp-pass-DEMO-2b8c44" >/dev/null
+# Settings that look like real credentials, so the sandbox sanitizer has something to redact.
+wp option add senja_payment_server_key "live-server-key-DEMO-7f3a91" >/dev/null
+wp option add senja_smtp_password "smtp-pass-DEMO-2b8c44" >/dev/null
 
-echo "[seed] Selesai. Admin: pemilik"
+echo "[seed] Done. Admin user: owner"

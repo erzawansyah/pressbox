@@ -1,117 +1,154 @@
-// Deterministic gate. The model never decides whether its own work is safe to ship.
-import { cfg, pluginDir } from './config.js';
-import { sandboxExec, sandboxHttp, lintPlugin, readSandboxFile, oomKilled } from './sandbox.js';
-import { parseObserver } from './tools.js';
+// Deterministic gate. The model never decides whether its own work is safe to ship;
+// these checks do, and every one of them must pass before "Apply to production" appears.
+import { cfg } from './config.js';
+import { sandboxExec, sandboxHttp, lintPlugin, readSandboxFile, wasOomKilled } from './sandbox.js';
+import { parseObserverLog } from './tools.js';
 import { isCriticalPage } from './proc.js';
 
-const DANGEROUS = [
+const DANGEROUS_PATTERNS = [
   [/\b(eval|assert)\s*\(/, 'eval/assert'],
-  [/\b(exec|shell_exec|system|passthru|proc_open|popen|pcntl_exec)\s*\(/, 'eksekusi perintah sistem'],
-  [/`[^`\n]*\$[^`\n]*`/, 'backtick shell'],
-  [/\b(fsockopen|pfsockopen|stream_socket_client|curl_exec)\s*\(/, 'koneksi jaringan mentah'],
-  [/\b(wp_insert_user|wp_create_user|wp_update_user|add_role|set_role)\s*\(/, 'mengubah akun/role pengguna'],
-  [/\b(base64_decode|gzinflate|str_rot13)\s*\(/, 'kode tersamar'],
-  [/\$wpdb\s*->\s*query\s*\(/, 'SQL langsung'],
-  [/\b(file_put_contents|unlink|rename)\s*\(\s*ABSPATH/, 'menulis/menghapus file inti'],
+  [/\b(exec|shell_exec|system|passthru|proc_open|popen|pcntl_exec)\s*\(/, 'runs system commands'],
+  [/`[^`\n]*\$[^`\n]*`/, 'shell backticks'],
+  [/\b(fsockopen|pfsockopen|stream_socket_client|curl_exec)\s*\(/, 'raw network access'],
+  [/\b(wp_insert_user|wp_create_user|wp_update_user|add_role|set_role)\s*\(/, 'changes user accounts or roles'],
+  [/\b(base64_decode|gzinflate|str_rot13)\s*\(/, 'obfuscated code'],
+  [/\$wpdb\s*->\s*query\s*\(/, 'raw SQL'],
+  [/\b(file_put_contents|unlink|rename)\s*\(\s*ABSPATH/, 'writes or deletes core files'],
 ];
 
-const hostOfUrl = (u) => {
-  try {
-    return new URL(u).hostname;
-  } catch {
-    return u;
-  }
+// Code that needs a PHP extension production lacks would fatal there even if the sandbox had it.
+const EXTENSION_USAGE = {
+  imagick: /\bImagick\w*\b/,
+  gd: /\bimage(create|copy|png|jpeg|webp)\w*\s*\(/,
+  intl: /\b(NumberFormatter|IntlDateFormatter|Collator|Normalizer)\b/,
+  mbstring: /\bmb_\w+\s*\(/,
+  zip: /\bZipArchive\b/,
+  curl: /\bcurl_\w+\s*\(/,
+  sodium: /\bsodium_\w+\s*\(/,
+  exif: /\bexif_\w+\s*\(/,
 };
-const allowed = (host) => cfg.allowedDomains.some((d) => host === d || host.endsWith(`.${d}`));
-// WordPress core's own update/pattern checks. Not agent code; reported nowhere as a violation.
+
+// WordPress core's own update and pattern checks are not agent code.
 export const isCoreHost = (host) => /(^|\.)(wordpress\.org|w\.org)$/i.test(host);
 
-async function adminLogins(task) {
-  const r = await sandboxExec(task, ['wp', 'user', 'list', '--role=administrator', '--field=user_login']);
-  return r.stdout.split('\n').filter(Boolean).sort().join(',');
+const hostname = (url) => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url; // not a URL; compare the raw string
+  }
+};
+const isApprovedHost = (host) => cfg.allowedDomains.some((domain) => host === domain || host.endsWith(`.${domain}`));
+
+/**
+ * Static analysis of every file the agent wrote: dangerous calls, hard-coded outbound
+ * hosts, and PHP extensions the code depends on. Pure, so it is unit-tested directly.
+ */
+export function scanChangedCode(files) {
+  const dangerous = [];
+  const calledHosts = new Set();
+  const neededExtensions = new Set();
+  for (const [file, { after: code }] of Object.entries(files)) {
+    for (const [pattern, label] of DANGEROUS_PATTERNS) if (pattern.test(code)) dangerous.push(`${file}: ${label}`);
+    for (const match of code.matchAll(/wp_(?:safe_)?remote_(?:get|post|request|head)\s*\(\s*['"]([^'"]+)['"]/g)) calledHosts.add(hostname(match[1]));
+    for (const [extension, pattern] of Object.entries(EXTENSION_USAGE)) if (pattern.test(code)) neededExtensions.add(extension);
+  }
+  return { dangerous, calledHosts: [...calledHosts], neededExtensions: [...neededExtensions] };
 }
 
-export async function snapshotBefore(task) {
-  task.adminsBefore = await adminLogins(task);
+async function administratorLogins(task) {
+  const res = await sandboxExec(task, ['wp', 'user', 'list', '--role=administrator', '--field=user_login']);
+  return res.stdout.split('\n').filter(Boolean).sort().join(',');
 }
 
-export async function runGate(task, agentResult) {
+export async function recordBaseline(task) {
+  task.adminsBefore = await administratorLogins(task);
+}
+
+export async function runGate(task, agentOutcome) {
   const checks = [];
-  const add = (name, ok, detail) => checks.push({ name, ok, detail });
+  const check = (name, ok, detail) => checks.push({ name, ok, detail });
 
-  add('Agen menyelesaikan tugas', agentResult.finished, agentResult.finished ? 'Agen memanggil finish.' : `Tidak selesai: ${agentResult.reason}`);
+  check('Agent finished the task', agentOutcome.finished, agentOutcome.finished ? 'The agent called finish.' : `Did not finish: ${agentOutcome.reason}.`);
 
   const files = Object.keys(task.changeset.files);
-  const cmds = task.changeset.commands.length;
-  add('Ada perubahan untuk ditinjau', files.length + cmds > 0, `${files.length} file plugin, ${cmds} perintah WP-CLI.`);
+  const commandCount = task.changeset.commands.length;
+  check('There is a change to review', files.length + commandCount > 0, `${files.length} plugin files, ${commandCount} WP-CLI commands.`);
 
-  const lint = await lintPlugin(task);
-  add('Sintaks PHP plugin valid', lint.length === 0, lint.length ? lint.join(' | ').slice(0, 400) : 'php -l bersih untuk semua file.');
+  const lintErrors = await lintPlugin(task);
+  check('Plugin PHP syntax is valid', lintErrors.length === 0, lintErrors.length ? lintErrors.join(' | ').slice(0, 400) : 'php -l is clean for every file.');
 
-  // Static scan of everything the agent wrote.
-  const hits = [];
-  const outboundInCode = new Set();
-  for (const f of files) {
-    const code = task.changeset.files[f].after;
-    for (const [re, label] of DANGEROUS) if (re.test(code)) hits.push(`${f}: ${label}`);
-    for (const m of code.matchAll(/wp_(?:safe_)?remote_(?:get|post|request|head)\s*\(\s*['"]([^'"]+)['"]/g)) outboundInCode.add(hostOfUrl(m[1]));
-  }
-  add('Tanpa fungsi berbahaya di kode', hits.length === 0, hits.length ? hits.join('; ') : 'Pemindaian pola: bersih.');
-  const badHosts = [...outboundInCode].filter((h) => !allowed(h));
-  add(
-    'Koneksi keluar hanya ke domain yang disetujui',
-    badHosts.length === 0,
-    badHosts.length ? `Kode memanggil domain yang belum disetujui: ${badHosts.join(', ')}.` : 'Kode tidak memanggil layanan luar.',
+  const { dangerous, calledHosts, neededExtensions } = scanChangedCode(task.changeset.files);
+  check('No dangerous functions in the code', dangerous.length === 0, dangerous.length ? dangerous.join('; ') : 'Pattern scan is clean.');
+
+  const unapprovedHosts = calledHosts.filter((host) => !isApprovedHost(host));
+  check(
+    'Only approved outbound domains',
+    unapprovedHosts.length === 0,
+    unapprovedHosts.length ? `The code calls domains nobody approved: ${unapprovedHosts.join(', ')}.` : 'The code calls no external services.',
   );
 
-  // Judge the FINAL state only: errors/attempts produced while the gate itself re-renders every page.
-  // (Errors the agent hit and already fixed during its loop must not count.)
-  const debugStart = (await readSandboxFile(task, '/tmp/wp-debug.log')).length;
-  const obsStart = (await readSandboxFile(task, '/tmp/pb-observer.log')).length;
-
-  // Render every published page.
-  const pages = await sandboxExec(task, ['wp', 'post', 'list', '--post_type=page', '--post_status=publish', '--field=ID']);
-  const ids = pages.stdout.split('\n').filter(Boolean);
-  const pageResults = [];
-  for (const p of ['/', ...ids.map((id) => `/?page_id=${id}`)]) {
-    const r = await sandboxHttp(task, p);
-    pageResults.push({ path: p, status: r.status, timedOut: !!r.timedOut, critical: isCriticalPage(r.body), ms: r.ms });
+  if (task.profile) {
+    const missing = neededExtensions.filter((extension) => task.profile.missing_extensions.includes(extension));
+    check(
+      'Compatible with the production server',
+      missing.length === 0,
+      missing.length
+        ? `The code needs PHP extensions production does not have: ${missing.join(', ')}.`
+        : `Uses only extensions available on production (PHP ${task.profile.php_version}).`,
+    );
   }
-  const broken = pageResults.filter((r) => r.status !== 200 || r.critical || r.timedOut);
-  add(
-    'Semua halaman tampil normal (HTTP 200)',
+
+  // Judge the final state only: errors the agent hit and already fixed must not count,
+  // so we look at what the logs gain while the gate re-renders every page itself.
+  const debugOffset = (await readSandboxFile(task, '/tmp/wp-debug.log')).length;
+  const observerOffset = (await readSandboxFile(task, '/tmp/pb-observer.log')).length;
+
+  const pageIds = (await sandboxExec(task, ['wp', 'post', 'list', '--post_type=page', '--post_status=publish', '--field=ID'])).stdout.split('\n').filter(Boolean);
+  const renders = [];
+  for (const requestPath of ['/', ...pageIds.map((id) => `/?page_id=${id}`)]) {
+    const page = await sandboxHttp(task, requestPath);
+    renders.push({ path: requestPath, status: page.status, timedOut: !!page.timedOut, critical: isCriticalPage(page.body), ms: page.ms });
+  }
+  const broken = renders.filter((r) => r.status !== 200 || r.critical || r.timedOut);
+  check(
+    'Every page renders (HTTP 200)',
     broken.length === 0,
     broken.length
-      ? broken.map((b) => `${b.path}: ${b.timedOut ? 'melewati batas waktu' : `HTTP ${b.status}`}${b.critical ? ' (error PHP)' : ''}`).join('; ')
-      : `${pageResults.length} halaman dicek.`,
+      ? broken.map((r) => `${r.path}: ${r.timedOut ? 'timed out' : `HTTP ${r.status}`}${r.critical ? ' (PHP error)' : ''}`).join('; ')
+      : `${renders.length} pages checked.`,
   );
 
-  const debug = (await readSandboxFile(task, '/tmp/wp-debug.log')).slice(debugStart);
-  const fatals = debug.split('\n').filter((l) => /PHP (Fatal|Parse) error|Maximum execution time/i.test(l));
-  const timeLimit = fatals.some((l) => /Maximum execution time/i.test(l));
-  add('Tanpa fatal error PHP', fatals.length === 0, fatals.length ? fatals.slice(-2).join(' | ').slice(0, 400) : 'Log PHP bersih dari fatal error.');
-  if (timeLimit) add('Dalam batas waktu eksekusi', false, 'Kode dihentikan oleh batas waktu 20 detik per request di sandbox.');
+  const newDebug = (await readSandboxFile(task, '/tmp/wp-debug.log')).slice(debugOffset);
+  const fatals = newDebug.split('\n').filter((line) => /PHP (Fatal|Parse) error|Maximum execution time/i.test(line));
+  check('No PHP fatal errors', fatals.length === 0, fatals.length ? fatals.slice(-2).join(' | ').slice(0, 400) : 'No fatal errors in the PHP log.');
+  if (fatals.some((line) => /Maximum execution time/i.test(line))) {
+    check('Within the time limit', false, `Stopped by the ${task.profile?.max_execution_time || 20}s per-request limit copied from production.`);
+  }
 
-  const obs = parseObserver((await readSandboxFile(task, '/tmp/pb-observer.log')).slice(obsStart));
-  const attempts = obs.filter((o) => o.type === 'http' && !isCoreHost(hostOfUrl(o.url)));
-  const blockedAttempts = attempts.filter((o) => !allowed(hostOfUrl(o.url)));
-  add(
-    'Tidak ada percobaan koneksi keluar yang tidak disetujui',
-    blockedAttempts.length === 0,
-    blockedAttempts.length
-      ? `${blockedAttempts.length} percobaan ke ${[...new Set(blockedAttempts.map((o) => hostOfUrl(o.url)))].join(', ')}; semuanya tertahan jaringan sandbox (${blockedAttempts[0].error || 'tanpa respons'}).`
-      : 'Pengamat sandbox tidak mencatat koneksi keluar.',
+  const outbound = parseObserverLog((await readSandboxFile(task, '/tmp/pb-observer.log')).slice(observerOffset)).filter(
+    (entry) => entry.type === 'http' && !isCoreHost(hostname(entry.url)),
   );
-  const leaked = attempts.some((o) => task.redactionMarker && String(o.url).includes(task.redactionMarker));
-  if (leaked) add('Data rahasia tidak dikirim keluar', false, 'Nilai rahasia yang disamarkan muncul di permintaan keluar.');
+  const blocked = outbound.filter((entry) => !isApprovedHost(hostname(entry.url)));
+  check(
+    'No unapproved outbound connections',
+    blocked.length === 0,
+    blocked.length
+      ? `${blocked.length} attempts to ${[...new Set(blocked.map((entry) => hostname(entry.url)))].join(', ')}; all stopped by the sandbox network (${blocked[0].error || 'no response'}).`
+      : 'The sandbox observer saw no outbound connections.',
+  );
+  if (outbound.some((entry) => task.redactionMarker && String(entry.url).includes(task.redactionMarker))) {
+    check('No secrets sent out', false, 'A redacted secret value appeared in an outbound request.');
+  }
 
-  const adminsAfter = await adminLogins(task);
-  add('Akun admin tidak berubah', adminsAfter === task.adminsBefore, adminsAfter === task.adminsBefore ? 'Daftar admin sama seperti sebelum tugas.' : `Sebelum: ${task.adminsBefore || '-'}; sesudah: ${adminsAfter || '-'}.`);
+  const adminsAfter = await administratorLogins(task);
+  check(
+    'Administrator accounts unchanged',
+    adminsAfter === task.adminsBefore,
+    adminsAfter === task.adminsBefore ? 'Same administrators as before the task.' : `Before: ${task.adminsBefore || '-'}; after: ${adminsAfter || '-'}.`,
+  );
 
-  if (await oomKilled(task)) add('Dalam batas memori', false, `Container dihentikan karena melewati batas RAM ${cfg.limits.memory}.`);
+  if (await wasOomKilled(task)) check('Within the memory limit', false, `The container exceeded its ${cfg.limits.memory} RAM limit.`);
 
-  const pass = checks.every((c) => c.ok);
-  return { pass, checks, pages: pageResults, outbound: attempts };
+  return { pass: checks.every((c) => c.ok), checks, pages: renders, outbound };
 }
-
-export { pluginDir };

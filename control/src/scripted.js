@@ -1,21 +1,22 @@
-// SCRIPTED MODE: a fake LLM that replays fixed tool-call sequences.
-// Only for testing the pipeline before a Vultr Serverless Inference key is available.
-// The UI shows a "MODE SKRIP" banner whenever this is active. Never use it for the submission video.
+// Scripted mode: a stand-in for the LLM that replays fixed tool-call sequences, so the
+// pipeline (sandbox, gate, apply) can be tested offline and in CI. Active only when no
+// LLM_API_KEY is configured, and the UI labels it clearly. Never used for the demo video.
 
-const RESERVASI_FIXED = `<?php
+const RESERVATIONS_PHP = `<?php
 /**
- * Form reservasi meja: shortcode [kss_reservasi], data tersimpan sebagai post type "kss_reservasi".
+ * Table reservations: [senja_reservation_form] shortcode; bookings are stored as the
+ * private "senja_reservation" post type and listed in wp-admin.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-function kss_reservasi_register_post_type() {
+function senja_register_reservation_type() {
 	register_post_type(
-		'kss_reservasi',
+		'senja_reservation',
 		array(
-			'labels'    => array( 'name' => 'Reservasi', 'singular_name' => 'Reservasi' ),
+			'labels'    => array( 'name' => 'Reservations', 'singular_name' => 'Reservation' ),
 			'public'    => false,
 			'show_ui'   => true,
 			'menu_icon' => 'dashicons-calendar-alt',
@@ -23,247 +24,243 @@ function kss_reservasi_register_post_type() {
 		)
 	);
 }
-add_action( 'init', 'kss_reservasi_register_post_type' );
+add_action( 'init', 'senja_register_reservation_type' );
 
-function kss_reservasi_handle_submit() {
-	if ( empty( $_POST['kss_reservasi_nonce'] ) ) {
+function senja_handle_reservation() {
+	if ( empty( $_POST['senja_reservation_nonce'] ) ) {
 		return;
 	}
-	if ( ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['kss_reservasi_nonce'] ) ), 'kss_reservasi' ) ) {
-		$GLOBALS['kss_reservasi_status'] = 'gagal';
+	if ( ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['senja_reservation_nonce'] ) ), 'senja_reservation' ) ) {
+		$GLOBALS['senja_reservation_status'] = 'failed';
 		return;
 	}
-	$nama    = sanitize_text_field( wp_unslash( $_POST['kss_nama'] ?? '' ) );
-	$wa      = sanitize_text_field( wp_unslash( $_POST['kss_wa'] ?? '' ) );
-	$tanggal = sanitize_text_field( wp_unslash( $_POST['kss_tanggal'] ?? '' ) );
-	$jam     = sanitize_text_field( wp_unslash( $_POST['kss_jam'] ?? '' ) );
-	$orang   = absint( $_POST['kss_orang'] ?? 0 );
+	$name   = sanitize_text_field( wp_unslash( $_POST['senja_name'] ?? '' ) );
+	$phone  = sanitize_text_field( wp_unslash( $_POST['senja_phone'] ?? '' ) );
+	$date   = sanitize_text_field( wp_unslash( $_POST['senja_date'] ?? '' ) );
+	$time   = sanitize_text_field( wp_unslash( $_POST['senja_time'] ?? '' ) );
+	$guests = absint( $_POST['senja_guests'] ?? 0 );
 
-	if ( '' === $nama || '' === $wa || '' === $tanggal || '' === $jam || $orang < 1 ) {
-		$GLOBALS['kss_reservasi_status'] = 'kurang';
+	if ( '' === $name || '' === $phone || '' === $date || '' === $time || $guests < 1 ) {
+		$GLOBALS['senja_reservation_status'] = 'incomplete';
 		return;
 	}
 
 	$id = wp_insert_post(
 		array(
-			'post_type'   => 'kss_reservasi',
+			'post_type'   => 'senja_reservation',
 			'post_status' => 'publish',
-			'post_title'  => sprintf( '%s, %s %s, %d orang', $nama, $tanggal, $jam, $orang ),
+			'post_title'  => sprintf( '%s, %s %s, %d guests', $name, $date, $time, $guests ),
 		)
 	);
 	if ( $id && ! is_wp_error( $id ) ) {
-		update_post_meta( $id, 'kss_wa', $wa );
-		$GLOBALS['kss_reservasi_status'] = 'ok';
+		update_post_meta( $id, 'senja_phone', $phone );
+		$GLOBALS['senja_reservation_status'] = 'saved';
 	} else {
-		$GLOBALS['kss_reservasi_status'] = 'gagal';
+		$GLOBALS['senja_reservation_status'] = 'failed';
 	}
 }
-add_action( 'init', 'kss_reservasi_handle_submit', 20 );
+add_action( 'init', 'senja_handle_reservation', 20 );
 
-/* HELPER-START */
-function kss_format_tanggal_indonesia( $ymd ) {
-	$bulan = array( 1 => 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember' );
-	$t     = strtotime( $ymd );
-	return (int) gmdate( 'j', $t ) . ' ' . $bulan[ (int) gmdate( 'n', $t ) ] . ' ' . gmdate( 'Y', $t );
+/* DATE-HELPER-START */
+function senja_format_date( $ymd ) {
+	return wp_date( 'j F Y', strtotime( $ymd ) );
 }
-/* HELPER-END */
+/* DATE-HELPER-END */
 
-function kss_reservasi_shortcode() {
-	$status   = $GLOBALS['kss_reservasi_status'] ?? '';
-	$pesan    = array(
-		'ok'     => 'Terima kasih! Reservasi kamu sudah kami terima. Kami konfirmasi lewat WhatsApp.',
-		'kurang' => 'Mohon lengkapi semua kolom.',
-		'gagal'  => 'Maaf, reservasi gagal disimpan. Coba lagi.',
+function senja_reservation_form_shortcode() {
+	$status   = $GLOBALS['senja_reservation_status'] ?? '';
+	$messages = array(
+		'saved'      => 'Thank you! We received your reservation and will confirm on WhatsApp.',
+		'incomplete' => 'Please fill in every field.',
+		'failed'     => 'Sorry, the reservation could not be saved. Please try again.',
 	);
-	$hari_ini = current_time( 'Y-m-d' );
+	$today    = current_time( 'Y-m-d' );
 	ob_start();
 	?>
-	<div class="kss-reservasi">
-		<?php if ( isset( $pesan[ $status ] ) ) : ?>
-			<p class="kss-reservasi-pesan"><strong><?php echo esc_html( $pesan[ $status ] ); ?></strong></p>
+	<div class="senja-reservation">
+		<?php if ( isset( $messages[ $status ] ) ) : ?>
+			<p class="senja-reservation-message"><strong><?php echo esc_html( $messages[ $status ] ); ?></strong></p>
 		<?php endif; ?>
-		<p>Reservasi meja tersedia mulai <?php echo esc_html( kss_format_tanggal_indonesia( $hari_ini ) ); ?>.</p>
+		<p>Tables can be booked from <?php echo esc_html( senja_format_date( $today ) ); ?>.</p>
 		<form method="post">
-			<?php wp_nonce_field( 'kss_reservasi', 'kss_reservasi_nonce' ); ?>
-			<p><label>Nama<br><input type="text" name="kss_nama" required></label></p>
-			<p><label>Nomor WhatsApp<br><input type="tel" name="kss_wa" required></label></p>
-			<p><label>Tanggal<br><input type="date" name="kss_tanggal" min="<?php echo esc_attr( $hari_ini ); ?>" required></label></p>
-			<p><label>Jam<br><input type="time" name="kss_jam" min="07:00" max="22:00" required></label></p>
-			<p><label>Jumlah orang<br><input type="number" name="kss_orang" min="1" max="12" value="2" required></label></p>
-			<p><button type="submit">Pesan meja</button></p>
+			<?php wp_nonce_field( 'senja_reservation', 'senja_reservation_nonce' ); ?>
+			<p><label>Name<br><input type="text" name="senja_name" required></label></p>
+			<p><label>WhatsApp number<br><input type="tel" name="senja_phone" required></label></p>
+			<p><label>Date<br><input type="date" name="senja_date" min="<?php echo esc_attr( $today ); ?>" required></label></p>
+			<p><label>Time<br><input type="time" name="senja_time" min="07:00" max="22:00" required></label></p>
+			<p><label>Guests<br><input type="number" name="senja_guests" min="1" max="12" value="2" required></label></p>
+			<p><button type="submit">Book a table</button></p>
 		</form>
 	</div>
 	<?php
 	return ob_get_clean();
 }
-add_shortcode( 'kss_reservasi', 'kss_reservasi_shortcode' );
+add_shortcode( 'senja_reservation_form', 'senja_reservation_form_shortcode' );
 `;
 
-// First attempt "forgets" the date helper -> fatal error in the sandbox -> the loop fixes it.
-const RESERVASI_BUGGY = RESERVASI_FIXED.replace(/\/\* HELPER-START \*\/[\s\S]*?\/\* HELPER-END \*\/\n\n/, '');
-const RESERVASI_CLEAN = RESERVASI_FIXED.replace('/* HELPER-START */\n', '').replace('/* HELPER-END */\n', '');
+// The first attempt "forgets" the date helper, producing a real fatal error in the sandbox
+// so the error -> read log -> fix loop gets exercised.
+const RESERVATIONS_FIRST_TRY = RESERVATIONS_PHP.replace(/\/\* DATE-HELPER-START \*\/[\s\S]*?\/\* DATE-HELPER-END \*\/\n\n/, '');
+const RESERVATIONS_FIXED = RESERVATIONS_PHP.replace('/* DATE-HELPER-START */\n', '').replace('/* DATE-HELPER-END */\n', '');
 
-const KURS = `<?php
+const EXCHANGE_RATE_PHP = `<?php
 /**
- * Widget kurs: shortcode [kss_kurs] menampilkan kurs USD ke IDR dari API publik.
+ * [senja_exchange_rate]: today's USD to IDR rate from a public API.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-function kss_kurs_shortcode() {
-	$res = wp_remote_get( 'https://open.er-api.com/v6/latest/USD', array( 'timeout' => 5 ) );
-	if ( is_wp_error( $res ) ) {
-		return '<p class="kss-kurs">Kurs belum bisa dimuat.</p>';
+function senja_exchange_rate_shortcode() {
+	$response = wp_remote_get( 'https://open.er-api.com/v6/latest/USD', array( 'timeout' => 5 ) );
+	if ( is_wp_error( $response ) ) {
+		return '<p class="senja-exchange-rate">Exchange rate unavailable.</p>';
 	}
-	$data = json_decode( wp_remote_retrieve_body( $res ), true );
-	$idr  = isset( $data['rates']['IDR'] ) ? (float) $data['rates']['IDR'] : 0;
-	return '<p class="kss-kurs">Kurs hari ini: 1 USD = Rp' . esc_html( number_format( $idr, 0, ',', '.' ) ) . '</p>';
+	$rates = json_decode( wp_remote_retrieve_body( $response ), true );
+	$idr   = isset( $rates['rates']['IDR'] ) ? (float) $rates['rates']['IDR'] : 0;
+	return '<p class="senja-exchange-rate">Today: 1 USD = IDR ' . esc_html( number_format( $idr, 0 ) ) . '</p>';
 }
-add_shortcode( 'kss_kurs', 'kss_kurs_shortcode' );
+add_shortcode( 'senja_exchange_rate', 'senja_exchange_rate_shortcode' );
 `;
 
-const PROMO = `<?php
+const PROMO_PHP = `<?php
 /**
- * Banner promo: shortcode [kss_promo] menghitung harga promo paket kopi.
+ * [senja_promo]: bundle price that steps down until it is below IDR 20,000.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-function kss_promo_shortcode() {
-	$harga_normal = 25000;
-	$harga        = $harga_normal;
-	$diskon       = 0;
-	// Turunkan harga bertahap sampai di bawah Rp20.000.
-	while ( $harga >= 20000 ) {
-		$diskon = $diskon + 0; // langkah diskon lupa diisi: loop tidak pernah berhenti
-		$harga  = $harga_normal - $diskon;
+function senja_promo_shortcode() {
+	$regular  = 25000;
+	$price    = $regular;
+	$discount = 0;
+	while ( $price >= 20000 ) {
+		$discount = $discount + 0; // the step size was never set, so the loop never ends
+		$price    = $regular - $discount;
 	}
-	return '<p class="kss-promo">Promo paket: Rp' . esc_html( number_format( $harga, 0, ',', '.' ) ) . '</p>';
+	return '<p class="senja-promo">Bundle price: IDR ' . esc_html( number_format( $price, 0 ) ) . '</p>';
 }
-add_shortcode( 'kss_promo', 'kss_promo_shortcode' );
+add_shortcode( 'senja_promo', 'senja_promo_shortcode' );
 `;
 
-let seq = 0;
-const call = (name, args) => ({ id: `scr_${++seq}`, type: 'function', function: { name, arguments: JSON.stringify(args) } });
-const say = (content, calls) => ({ message: { role: 'assistant', content, tool_calls: calls }, usage: null });
+let callCounter = 0;
+const toolCall = (name, args) => ({ id: `scripted_${++callCounter}`, type: 'function', function: { name, arguments: JSON.stringify(args) } });
+const reply = (content, calls) => ({ message: { role: 'assistant', content, tool_calls: calls }, usage: null });
 
-function lastToolJson(messages) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'tool') {
-      try {
-        return JSON.parse(messages[i].content);
-      } catch {
-        return {};
-      }
-    }
+function lastToolResult(messages) {
+  const last = [...messages].reverse().find((m) => m.role === 'tool');
+  if (!last) return {};
+  try {
+    return JSON.parse(last.content);
+  } catch {
+    return {}; // truncated tool output; scenarios only need a few fields
   }
-  return {};
 }
 
-function pageId(task, slug, fallback) {
-  const p = (task.context?.pages || []).find((x) => x.post_name === slug);
-  return String(p ? p.ID : fallback);
+function pageIdBySlug(task, slug, fallbackId) {
+  const page = (task.context?.pages || []).find((p) => p.post_name === slug);
+  return String(page ? page.ID : fallbackId);
 }
 
-const withRequire = (main, file) =>
-  main.includes(file) ? main : `${main.trimEnd()}\n\nrequire_once __DIR__ . '/includes/${file}';\n`;
+const MAIN_FILE = 'senja-coffee.php';
+const withRequire = (main, file) => (main.includes(file) ? main : `${main.trimEnd()}\n\nrequire_once __DIR__ . '/includes/${file}';\n`);
 const withShortcode = (content, tag) => `${content.trimEnd()}\n\n<!-- wp:shortcode -->\n[${tag}]\n<!-- /wp:shortcode -->`;
 
-function featureScenario(task, messages, step, o) {
-  const st = (task.scripted = task.scripted || {});
-  const pid = pageId(task, o.pageSlug, o.pageFallback);
+/**
+ * Shared script for "add a shortcode feature to a page": read guide and main file, write
+ * the feature, place it on the page, test, optionally fix once, finish.
+ */
+function featureScript(task, messages, step, scenario) {
+  const state = (task.scriptState ??= {});
+  const pageId = pageIdBySlug(task, scenario.pageSlug, scenario.fallbackPageId);
   switch (step) {
     case 0:
-      return say(o.intro, [call('wp_guide', { doc: 'plugin-development/SKILL.md' }), call('read_file', { path: 'kedai-senja-custom.php' })]);
+      return reply(scenario.intro, [toolCall('wp_guide', { doc: 'plugin-development/SKILL.md' }), toolCall('read_file', { path: MAIN_FILE })]);
     case 1:
-      st.main = lastToolJson(messages).content || '';
-      return say(null, [
-        call('write_file', { path: `includes/${o.file}`, content: o.firstCode }),
-        call('write_file', { path: 'kedai-senja-custom.php', content: withRequire(st.main, o.file) }),
+      state.mainFile = lastToolResult(messages).content || '';
+      return reply(null, [
+        toolCall('write_file', { path: `includes/${scenario.file}`, content: scenario.code }),
+        toolCall('write_file', { path: MAIN_FILE, content: withRequire(state.mainFile, scenario.file) }),
       ]);
     case 2:
-      return say(null, [call('run_wp', { args: ['post', 'get', pid, '--field=post_content'] })]);
+      return reply(null, [toolCall('run_wp', { args: ['post', 'get', pageId, '--field=post_content'] })]);
     case 3:
-      st.page = lastToolJson(messages).stdout || '';
-      return say(null, [call('run_wp', { args: ['post', 'update', pid, `--post_content=${withShortcode(st.page, o.tag)}`] })]);
+      return reply(null, [toolCall('run_wp', { args: ['post', 'update', pageId, `--post_content=${withShortcode(lastToolResult(messages).stdout || '', scenario.tag)}`] })]);
     case 4:
-      return say(null, [call('check_site', { path: `/?page_id=${pid}` })]);
+      return reply(null, [toolCall('check_site', { path: `/?page_id=${pageId}` })]);
     case 5: {
-      const r = lastToolJson(messages);
-      const broken = r.critical_error_page || r.http_status >= 500 || (r.php_lint_errors || []).length || r.timed_out;
-      if (broken && o.fixCode) {
-        st.fixed = true;
-        return say('Halaman error: fungsi pembantu tanggal belum dibuat. Saya tambahkan lalu uji ulang.', [
-          call('write_file', { path: `includes/${o.file}`, content: o.fixCode }),
+      const check = lastToolResult(messages);
+      const broken = check.critical_error_page || check.http_status >= 500 || check.php_lint_errors?.length || check.timed_out;
+      if (broken && scenario.fixedCode) {
+        return reply('The page fails: the date helper was never defined. Adding it and testing again.', [
+          toolCall('write_file', { path: `includes/${scenario.file}`, content: scenario.fixedCode }),
         ]);
       }
-      return say(null, [call('finish', { summary: o.summary(r) })]);
+      return reply(null, [toolCall('finish', { summary: scenario.summary(check) })]);
     }
     case 6:
-      return say(null, [call('check_site', { path: `/?page_id=${pid}` })]);
+      return reply(null, [toolCall('check_site', { path: `/?page_id=${pageId}` })]);
     default:
-      return say(null, [call('finish', { summary: o.summary(lastToolJson(messages)) })]);
+      return reply(null, [toolCall('finish', { summary: scenario.summary(lastToolResult(messages)) })]);
   }
 }
 
-export async function scriptedCompletion(task, messages) {
-  await new Promise((r) => setTimeout(r, 600)); // pacing so the UI feed is readable
-  const step = messages.filter((m) => m.role === 'assistant').length;
-  const msg = task.message.toLowerCase();
+const UI_PACING_MS = 600;
 
-  if (/reservasi|booking|pesan meja/.test(msg)) {
-    return featureScenario(task, messages, step, {
-      intro: 'Saya buat form reservasi meja di plugin kustom, lalu pasang di halaman Kontak.',
-      file: 'reservasi.php',
-      tag: 'kss_reservasi',
-      pageSlug: 'kontak',
-      pageFallback: 7,
-      firstCode: RESERVASI_BUGGY,
-      fixCode: RESERVASI_CLEAN,
-      summary: () =>
-        'Form reservasi meja sudah ditambahkan di halaman Kontak. Pengunjung mengisi nama, WhatsApp, tanggal, jam, dan jumlah orang. Data reservasi masuk ke menu "Reservasi" di wp-admin.',
+export async function scriptedCompletion(task, messages) {
+  await new Promise((resolve) => setTimeout(resolve, UI_PACING_MS));
+  const step = messages.filter((m) => m.role === 'assistant').length;
+  const request = task.message.toLowerCase();
+
+  if (/reservation|booking|book a table/.test(request)) {
+    return featureScript(task, messages, step, {
+      intro: 'I will build a table reservation form in the custom plugin and place it on the Contact page.',
+      file: 'reservations.php',
+      tag: 'senja_reservation_form',
+      pageSlug: 'contact',
+      fallbackPageId: 7,
+      code: RESERVATIONS_FIRST_TRY,
+      fixedCode: RESERVATIONS_FIXED,
+      summary: () => 'A table reservation form is now on the Contact page. Guests enter name, WhatsApp number, date, time and party size; bookings appear under "Reservations" in wp-admin.',
     });
   }
-  if (/kurs|cuaca|api luar|dolar|exchange/.test(msg)) {
-    return featureScenario(task, messages, step, {
-      intro: 'Saya buat widget kurs yang mengambil data dari API publik, lalu pasang di Beranda.',
-      file: 'kurs.php',
-      tag: 'kss_kurs',
-      pageSlug: 'beranda',
-      pageFallback: 4,
-      firstCode: KURS,
-      summary: () =>
-        'Widget kurs sudah dibuat, tapi datanya berasal dari layanan luar (open.er-api.com). Di sandbox koneksi itu tertahan karena sandbox tidak punya akses internet. Domain ini perlu disetujui dulu sebelum fitur bisa dipakai.',
+  if (/exchange rate|currency|external api|dollar/.test(request)) {
+    return featureScript(task, messages, step, {
+      intro: 'I will build an exchange-rate widget that reads a public API and place it on the Home page.',
+      file: 'exchange-rate.php',
+      tag: 'senja_exchange_rate',
+      pageSlug: 'home',
+      fallbackPageId: 4,
+      code: EXCHANGE_RATE_PHP,
+      summary: () => 'The exchange-rate widget is built, but it needs an external service (open.er-api.com) that the sandbox cannot reach. That domain must be approved before this feature can ship.',
     });
   }
-  if (/promo|diskon/.test(msg)) {
-    return featureScenario(task, messages, step, {
-      intro: 'Saya buat banner promo paket kopi dan pasang di Beranda.',
+  if (/promo|discount|bundle/.test(request)) {
+    return featureScript(task, messages, step, {
+      intro: 'I will add a bundle promo banner to the Home page.',
       file: 'promo.php',
-      tag: 'kss_promo',
-      pageSlug: 'beranda',
-      pageFallback: 4,
-      firstCode: PROMO,
-      summary: (r) =>
-        r.timed_out || r.critical_error_page
-          ? 'Banner promo sudah dibuat, tapi halaman Beranda di sandbox berhenti karena melewati batas waktu. Perhitungan promonya perlu diperbaiki.'
-          : 'Banner promo sudah dipasang di Beranda.',
+      tag: 'senja_promo',
+      pageSlug: 'home',
+      fallbackPageId: 4,
+      code: PROMO_PHP,
+      summary: (check) =>
+        check.timed_out || check.critical_error_page
+          ? 'The promo banner is built, but the Home page stopped at the time limit in the sandbox. The price calculation needs fixing.'
+          : 'The promo banner is on the Home page.',
     });
   }
-  const tagline = task.message.match(/["“](.+?)["”]/);
-  if (/tagline|slogan/.test(msg) && tagline) {
-    if (step === 0) return say('Saya ganti tagline situs.', [call('run_wp', { args: ['option', 'update', 'blogdescription', tagline[1]] })]);
-    if (step === 1) return say(null, [call('check_site', { path: '/' })]);
-    return say(null, [call('finish', { summary: `Tagline situs sekarang: "${tagline[1]}".` })]);
+  const quoted = task.message.match(/["“](.+?)["”]/);
+  if (/tagline|slogan/.test(request) && quoted) {
+    if (step === 0) return reply('Updating the site tagline.', [toolCall('run_wp', { args: ['option', 'update', 'blogdescription', quoted[1]] })]);
+    if (step === 1) return reply(null, [toolCall('check_site', { path: '/' })]);
+    return reply(null, [toolCall('finish', { summary: `The site tagline is now "${quoted[1]}".` })]);
   }
-  return say(null, [
-    call('finish', {
-      summary:
-        'Mode skrip hanya mendukung contoh: form reservasi, widget kurs (API luar), banner promo, dan ganti tagline "...". Isi LLM_API_KEY (Vultr Serverless Inference) untuk permintaan bebas.',
+  return reply(null, [
+    toolCall('finish', {
+      summary: 'Scripted mode only knows the example requests: reservation form, exchange-rate widget (external API), promo banner, and change the tagline to "...". Set LLM_API_KEY (Vultr Serverless Inference) for free-form requests.',
     }),
   ]);
 }

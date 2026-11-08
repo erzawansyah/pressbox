@@ -1,0 +1,38 @@
+/* PressBox brand tokens, shared by the landing page and the app. */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+:root {
+  --pb-night: #0b1020;
+  --pb-night-2: #111830;
+  --pb-night-3: #1a2340;
+  --pb-line: #26304f;
+  --pb-text: #e7ecf6;
+  --pb-muted: #93a0bb;
+  --pb-sky: #38bdf8;
+  --pb-mint: #22d3a6;
+  --pb-lime: #d9f99d;
+  --pb-amber: #facc15;
+  --pb-danger: #fb7185;
+  --pb-danger-bg: rgba(251, 113, 133, 0.12);
+  --pb-ok: #34d399;
+  --pb-ok-bg: rgba(52, 211, 153, 0.12);
+  --pb-gradient: linear-gradient(100deg, var(--pb-sky), var(--pb-mint) 55%, var(--pb-lime));
+  --pb-font: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --pb-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --pb-radius: 12px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--pb-night); color: var(--pb-text); font-family: var(--pb-font); }
+a { color: var(--pb-sky); }
+code, pre { font-family: var(--pb-mono); }
+
+.pb-wordmark { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 20px; color: var(--pb-text); text-decoration: none; letter-spacing: -0.01em; }
+.pb-wordmark img { width: 30px; height: 30px; }
+.pb-kicker { font-family: var(--pb-mono); font-size: 13px; color: var(--pb-mint); letter-spacing: 0.02em; }
+.pb-gradient-text { background: var(--pb-gradient); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.pb-button { display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border-radius: 10px; border: 1px solid var(--pb-line); background: var(--pb-night-2); color: var(--pb-text); font: 600 15px var(--pb-font); text-decoration: none; cursor: pointer; }
+.pb-button:hover { border-color: var(--pb-sky); }
+.pb-button.primary { background: var(--pb-gradient); color: var(--pb-night); border: 0; }
+.pb-button:disabled { opacity: 0.5; cursor: default; }
+.pb-chip { display: inline-block; padding: 4px 11px; border: 1px solid var(--pb-line); border-radius: 999px; font-family: var(--pb-mono); font-size: 12px; color: var(--pb-muted); }

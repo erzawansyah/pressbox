@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PressBox app</title>
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="brand.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="scripted-banner" class="banner" hidden>
+    Scripted mode: the agent replays fixed scenarios without an LLM, for pipeline testing only. Set <code>LLM_API_KEY</code> (Vultr Serverless Inference) for the real agent.
+  </div>
+  <header class="top">
+    <a class="pb-wordmark" href="/"><img src="logo.svg" alt="">PressBox</a>
+    <div class="meta">
+      <span class="pill" id="site-pill">Senja Coffee · production</span>
+      <span class="pill" id="llm-pill">…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chat">
+      <div id="thread" class="thread">
+        <div class="hello">
+          <h2>What should change on your site?</h2>
+          <p>Every request runs on a disposable copy of the site. Production only changes after the gate passes and you approve.</p>
+        </div>
+      </div>
+
+      <div id="access" class="access" hidden>
+        <h3>Unlock the agent</h3>
+        <p>The agent's LLM calls run on Vultr Serverless Inference and cost real tokens, so live runs are gated.</p>
+        <form id="code-form" class="access-row">
+          <input id="code-input" type="password" autocomplete="off" placeholder="Judge access code (in our lablab submission)">
+          <button class="pb-button primary" type="submit">Unlock</button>
+        </form>
+        <form id="key-form" class="access-row" hidden>
+          <input id="key-input" type="password" autocomplete="off" placeholder="Or your own Vultr Serverless Inference key">
+          <button class="pb-button" type="submit">Use my key</button>
+        </form>
+        <p class="fine">An own key is held in server memory for this session only: never stored, never logged, never passed into a sandbox.</p>
+        <p class="access-error" id="access-error"></p>
+      </div>
+
+      <div class="chips" id="chips">
+        <button data-msg="Add a table reservation form to the Contact page: name, WhatsApp number, date, time and number of guests.">Reservation form</button>
+        <button data-msg="Show today's US dollar exchange rate from an external API on the Home page.">Exchange rate (external API)</button>
+        <button data-msg="Add a bundle promo banner to the Home page; lower the price step by step until it is below IDR 20,000.">Promo banner</button>
+        <button data-msg='Change the site tagline to "Good coffee, warm conversations".'>Change tagline</button>
+      </div>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="2" placeholder="e.g. Add a table reservation form to the Contact page"></textarea>
+        <button id="send" type="submit" class="pb-button primary">Send</button>
+      </form>
+      <p class="quota" id="quota"></p>
+    </section>
+
+    <section class="panel">
+      <nav class="tabs">
+        <button class="tab active" data-tab="preview">Sandbox preview</button>
+        <button class="tab" data-tab="live">Production</button>
+        <button class="tab" data-tab="changes">Changes <span id="changes-count" class="count"></span></button>
+        <button class="tab" data-tab="containment">Containment</button>
+      </nav>
+      <div class="tabbody">
+        <div class="pane active" id="pane-preview">
+          <div class="urlbar"><span class="dot sbx"></span><span id="preview-url">No sandbox running</span></div>
+          <iframe id="preview-frame" title="Sandbox preview" sandbox="allow-forms allow-scripts allow-same-origin"></iframe>
+          <div id="preview-empty" class="empty">Send a request to create a sandbox. The site the agent builds appears here.</div>
+        </div>
+        <div class="pane" id="pane-live">
+          <div class="urlbar"><span class="dot live"></span><span id="live-url"></span><button id="profile-toggle" class="mini">Server profile</button><button id="live-reload" class="mini">Reload</button></div>
+          <div id="profile" class="profile" hidden></div>
+          <iframe id="live-frame" title="Production site" sandbox="allow-forms allow-scripts allow-same-origin"></iframe>
+        </div>
+        <div class="pane scroll" id="pane-changes">
+          <div id="changes" class="empty">No changes yet.</div>
+        </div>
+        <div class="pane scroll" id="pane-containment">
+          <div class="rules">
+            <div class="rule" data-rule="isolation"><b>1. Process isolation</b><span>One container per task, all Linux capabilities dropped, non-root, internal network only.</span></div>
+            <div class="rule" data-rule="secrets"><b>2. No credentials</b><span>API keys stay in the control plane. Site secrets are redacted before the copy is made.</span></div>
+            <div class="rule" data-rule="limits"><b>3. Time &amp; memory limits</b><span id="limits-text">RAM, CPU, process count, PHP limits copied from production, agent step limit.</span></div>
+            <div class="rule" data-rule="destroy"><b>4. Destroyed every task</b><span>The sandbox is removed after apply, discard, block, error or expiry.</span></div>
+          </div>
+          <h3 class="sub">Containment log</h3>
+          <ol id="clog" class="clog"></ol>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

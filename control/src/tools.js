@@ -1,10 +1,15 @@
-// Agent tools. The agent's "hands" are inside the sandbox only; no tool can reach the live site.
+// The agent's tools. They are its only hands, and every one of them acts inside the
+// sandbox: there is deliberately no tool that can reach the production site.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { cfg, pluginDir } from './config.js';
 import { sandboxExec, sandboxHttp, lintPlugin, readSandboxFile } from './sandbox.js';
 import { textExcerpt, isCriticalPage } from './proc.js';
 import { guideIndex, readGuide } from './wpguide.js';
+
+const MAX_FILE_BYTES = 120_000;
+const MAX_TOOL_OUTPUT_CHARS = 6000;
+const WP_CORE_HOST = /^https?:\/\/([^/]+\.)?(wordpress\.org|w\.org)(\/|$)/i;
 
 export const TOOL_DEFS = [
   {
@@ -22,7 +27,7 @@ export const TOOL_DEFS = [
       description: 'Read a file from the custom plugin. Path is relative to the plugin root.',
       parameters: {
         type: 'object',
-        properties: { path: { type: 'string', description: 'e.g. kedai-senja-custom.php or includes/foo.php' } },
+        properties: { path: { type: 'string', description: 'e.g. senja-coffee.php or includes/reservations.php' } },
         required: ['path'],
       },
     },
@@ -34,10 +39,7 @@ export const TOOL_DEFS = [
       description: 'Create or overwrite a file inside the custom plugin (full content). Path relative to plugin root.',
       parameters: {
         type: 'object',
-        properties: {
-          path: { type: 'string' },
-          content: { type: 'string', description: 'Complete file content' },
-        },
+        properties: { path: { type: 'string' }, content: { type: 'string', description: 'Complete file content' } },
         required: ['path', 'content'],
       },
     },
@@ -50,11 +52,7 @@ export const TOOL_DEFS = [
         'Run a WP-CLI command in the sandbox for content and settings (posts/pages, options, menus, terms). ' +
         'Pass arguments as an array without the leading "wp", e.g. ["post","update","7","--post_content=..."]. ' +
         'Reading users/plugins/themes is allowed; installing plugins, eval, db, config and user changes are not.',
-      parameters: {
-        type: 'object',
-        properties: { args: { type: 'array', items: { type: 'string' } } },
-        required: ['args'],
-      },
+      parameters: { type: 'object', properties: { args: { type: 'array', items: { type: 'string' } } }, required: ['args'] },
     },
   },
   {
@@ -64,11 +62,7 @@ export const TOOL_DEFS = [
       description:
         'Test the sandbox site: PHP lint of the plugin, HTTP status of a page, new PHP errors, outbound connection attempts, and a text excerpt. ' +
         'Always run this after changing code or content.',
-      parameters: {
-        type: 'object',
-        properties: { path: { type: 'string', description: 'Path to request, e.g. "/" or "/?page_id=7"' } },
-        required: [],
-      },
+      parameters: { type: 'object', properties: { path: { type: 'string', description: 'e.g. "/" or "/?page_id=7"' } }, required: [] },
     },
   },
   {
@@ -76,220 +70,211 @@ export const TOOL_DEFS = [
     function: {
       name: 'wp_guide',
       description:
-        'Read an official WordPress Agent Skills guide (from WordPress/agent-skills). Call without "doc" to list guides. ' +
+        'Read an official WordPress Agent Skills guide (WordPress/agent-skills). Call without "doc" to list guides. ' +
         'Read the relevant guide before writing plugin code, block/theme markup, or WP-CLI changes.',
-      parameters: {
-        type: 'object',
-        properties: { doc: { type: 'string', description: 'Guide id, e.g. "plugin-development/SKILL.md"' } },
-        required: [],
-      },
+      parameters: { type: 'object', properties: { doc: { type: 'string', description: 'e.g. "plugin-development/SKILL.md"' } }, required: [] },
     },
   },
   {
     type: 'function',
     function: {
       name: 'finish',
-      description: 'Call when done. Summary in Bahasa Indonesia for a non-technical site owner: what changed and where to see it.',
-      parameters: {
-        type: 'object',
-        properties: { summary: { type: 'string' } },
-        required: ['summary'],
-      },
+      description: 'Call when done. Short summary for a non-technical site owner: what changed and where to see it.',
+      parameters: { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] },
     },
   },
 ];
 
-// ---------- path policy ----------
-const ALLOWED_EXT = new Set(['.php', '.css', '.js', '.json', '.txt', '.html', '.svg', '.md']);
+const ALLOWED_EXTENSIONS = new Set(['.php', '.css', '.js', '.json', '.html', '.svg']);
 
-export function safeRel(p) {
-  const raw = String(p || '').replace(/\\/g, '/').replace(/^\.?\/+/, '');
-  if (!raw || raw.includes('\0')) throw new Error('Path kosong atau tidak valid.');
-  const rel = path.posix.normalize(raw);
-  if (rel === '.' || rel.startsWith('..') || rel.includes('/../') || path.posix.isAbsolute(rel)) {
-    throw new Error(`Path di luar plugin kustom ditolak: ${p}`);
+/** Normalises an agent-supplied path and refuses anything outside the custom plugin. */
+export function safePluginPath(requested) {
+  const raw = String(requested || '').replace(/\\/g, '/').replace(/^\.?\/+/, '');
+  if (!raw || raw.includes('\0')) throw new Error('Empty or invalid path.');
+  const relative = path.posix.normalize(raw);
+  if (relative === '.' || relative.startsWith('..') || relative.includes('/../') || path.posix.isAbsolute(relative)) {
+    throw new Error(`Path outside the custom plugin refused: ${requested}`);
   }
-  if (!ALLOWED_EXT.has(path.posix.extname(rel).toLowerCase())) {
-    throw new Error(`Ekstensi file tidak diizinkan: ${p}`);
-  }
-  return rel;
+  if (!ALLOWED_EXTENSIONS.has(path.posix.extname(relative).toLowerCase())) throw new Error(`File type not allowed: ${requested}`);
+  return relative;
 }
 
-// ---------- WP-CLI policy ----------
 const READ_ONLY_GROUPS = new Set(['plugin', 'theme', 'user', 'comment', 'post-type', 'taxonomy', 'role', 'site', 'menu-location']);
 const WRITE_GROUPS = new Set(['post', 'option', 'menu', 'term', 'widget', 'sidebar', 'rewrite', 'cache', 'transient', 'post-meta']);
-const READ_SUBS = new Set(['list', 'get', 'status', 'exists', 'is-active', 'is-installed', 'path', 'search', 'url', 'pluck', 'count']);
+const READ_SUBCOMMANDS = new Set(['list', 'get', 'status', 'exists', 'path', 'search', 'url', 'pluck', 'count']);
 const PROTECTED_OPTIONS = /^(siteurl|home|admin_email|new_admin_email|users_can_register|default_role|active_plugins|template|stylesheet|wp_user_roles|.*(password|passwd|secret|token|api_key|apikey|server_key).*)$/i;
-const FORBIDDEN_ARG = /^--(exec|require|path|url|ssh|http|skip-plugins|skip-themes|context)(=|$)/i;
+const FORBIDDEN_FLAGS = /^--(exec|require|path|url|ssh|http|skip-plugins|skip-themes|context)(=|$)/i;
 
+/**
+ * Allow-list for WP-CLI. Returns the cleaned argv and whether it changes state; only
+ * state-changing commands are recorded in the changeset and replayed on production.
+ */
 export function checkWpArgs(args) {
-  if (!Array.isArray(args) || args.length === 0) throw new Error('args harus array, misalnya ["post","list"].');
-  const a = args.map(String);
-  if (a[0] === 'wp') a.shift();
-  for (const x of a) if (FORBIDDEN_ARG.test(x)) throw new Error(`Argumen tidak diizinkan: ${x}`);
-  const [group, sub] = a;
-  let mutating = false;
+  if (!Array.isArray(args) || args.length === 0) throw new Error('args must be an array, e.g. ["post","list"].');
+  const argv = args.map(String);
+  if (argv[0] === 'wp') argv.shift();
+  for (const arg of argv) if (FORBIDDEN_FLAGS.test(arg)) throw new Error(`Flag not allowed: ${arg}`);
+
+  const [group, subcommand = ''] = argv;
+  const isRead = READ_SUBCOMMANDS.has(subcommand) || subcommand.startsWith('is-');
   if (READ_ONLY_GROUPS.has(group)) {
-    if (!READ_SUBS.has(sub) && !(sub || '').startsWith('is-')) throw new Error(`"wp ${group} ${sub}" tidak diizinkan (hanya baca).`);
-  } else if (WRITE_GROUPS.has(group)) {
-    mutating = !READ_SUBS.has(sub);
-    if (group === 'option' && mutating && PROTECTED_OPTIONS.test(a[2] || '')) {
-      throw new Error(`Opsi "${a[2]}" dilindungi dan tidak boleh diubah agen.`);
-    }
-    if (group === 'post' && sub === 'meta' && /^(_wp_|session)/.test(a[4] || '')) throw new Error('Meta internal tidak boleh diubah.');
-  } else {
-    throw new Error(`Perintah "wp ${group}" tidak diizinkan. Yang boleh: ${[...WRITE_GROUPS, ...READ_ONLY_GROUPS].join(', ')}.`);
+    if (!isRead) throw new Error(`"wp ${group} ${subcommand}" is not allowed (read-only).`);
+    return { args: argv, mutating: false };
   }
-  return { args: a, mutating };
+  if (!WRITE_GROUPS.has(group)) {
+    throw new Error(`"wp ${group}" is not allowed. Allowed: ${[...WRITE_GROUPS, ...READ_ONLY_GROUPS].join(', ')}.`);
+  }
+  if (group === 'option' && !isRead && PROTECTED_OPTIONS.test(argv[2] || '')) throw new Error(`Option "${argv[2]}" is protected.`);
+  if (group === 'post' && subcommand === 'meta' && /^(_wp_|session)/.test(argv[4] || '')) throw new Error('Internal post meta is protected.');
+  return { args: argv, mutating: !isRead };
 }
 
-// ---------- incremental log reads ----------
-async function readNew(task, file, key) {
-  const all = await readSandboxFile(task, file);
-  task.offsets = task.offsets || {};
-  const from = task.offsets[key] || 0;
-  task.offsets[key] = all.length;
-  return all.slice(from);
-}
-
-export function parseObserver(text) {
+export function parseObserverLog(text) {
   return text
     .split('\n')
     .filter(Boolean)
-    .map((l) => {
+    .flatMap((line) => {
       try {
-        return JSON.parse(l);
+        return [JSON.parse(line)];
       } catch {
-        return null;
+        return []; // a line cut off mid-write; the next read picks it up whole
       }
-    })
-    .filter(Boolean);
+    });
 }
 
-// ---------- executor ----------
+// Reads only what was appended since the previous call, so the agent sees new errors only.
+async function readNewLines(task, file) {
+  const content = await readSandboxFile(task, file);
+  task.logOffsets ??= {};
+  const from = task.logOffsets[file] || 0;
+  task.logOffsets[file] = content.length;
+  return content.slice(from);
+}
+
+async function originalPluginFile(task, relative) {
+  try {
+    return await fs.readFile(path.join(task.workDir, 'plugin', relative), 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null; // a new file
+    throw err;
+  }
+}
+
 export async function executeTool(task, name, input) {
-  const PD = pluginDir();
+  const root = pluginDir();
   switch (name) {
     case 'list_files': {
-      const r = await sandboxExec(task, ['find', PD, '-type', 'f']);
-      const files = r.stdout.split('\n').filter(Boolean).map((f) => f.slice(PD.length + 1)).sort();
-      return { files };
+      const res = await sandboxExec(task, ['find', root, '-type', 'f']);
+      return { files: res.stdout.split('\n').filter(Boolean).map((f) => f.slice(root.length + 1)).sort() };
     }
     case 'read_file': {
-      const rel = safeRel(input.path);
-      const r = await sandboxExec(task, ['cat', `${PD}/${rel}`]);
-      if (r.code !== 0) return { error: `File tidak ditemukan: ${rel}` };
-      return { path: rel, content: r.stdout };
+      const relative = safePluginPath(input.path);
+      const res = await sandboxExec(task, ['cat', `${root}/${relative}`]);
+      return res.code === 0 ? { path: relative, content: res.stdout } : { error: `File not found: ${relative}` };
     }
     case 'write_file': {
-      const rel = safeRel(input.path);
+      const relative = safePluginPath(input.path);
       const content = String(input.content ?? '');
-      if (content.length > 120_000) return { error: 'File terlalu besar (maks 120 KB).' };
-      const full = `${PD}/${rel}`;
-      const r = await sandboxExec(task, ['sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', full], { input: content });
-      if (r.code !== 0) return { error: r.stderr || 'Gagal menulis file.' };
-      if (!(rel in task.changeset.files)) {
-        let before = null;
-        try {
-          before = await fs.readFile(path.join(task.workDir, 'plugin', rel), 'utf8');
-        } catch {}
-        task.changeset.files[rel] = { before, after: content };
-      } else {
-        task.changeset.files[rel].after = content;
-      }
-      return { ok: true, path: rel, bytes: Buffer.byteLength(content) };
+      if (content.length > MAX_FILE_BYTES) return { error: `File too large (max ${MAX_FILE_BYTES / 1000} KB).` };
+      if (!content.trim()) return { error: 'Refusing to write an empty file. Send the complete file content.' };
+      const res = await sandboxExec(task, ['sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', `${root}/${relative}`], { input: content });
+      if (res.code !== 0) return { error: res.stderr || 'Write failed.' };
+      const entry = task.changeset.files[relative];
+      if (entry) entry.after = content;
+      else task.changeset.files[relative] = { before: await originalPluginFile(task, relative), after: content };
+      return { ok: true, path: relative, bytes: Buffer.byteLength(content) };
     }
     case 'run_wp': {
       const { args, mutating } = checkWpArgs(input.args);
-      const r = await sandboxExec(task, ['wp', ...args]);
-      const out = (r.stdout || '').slice(0, 6000);
-      const err = (r.stderr || '').replace(/^.*Deprecated.*$/gm, '').trim().slice(0, 2000);
-      if (r.code === 0 && mutating) task.changeset.commands.push({ args, output: out.trim().slice(0, 200) });
-      return { exit_code: r.code, timed_out: r.timedOut || r.code === 137, stdout: out, stderr: err };
+      const res = await sandboxExec(task, ['wp', ...args]);
+      const stdout = (res.stdout || '').slice(0, MAX_TOOL_OUTPUT_CHARS);
+      if (res.code === 0 && mutating) task.changeset.commands.push({ args, output: stdout.trim().slice(0, 200) });
+      return { exit_code: res.code, timed_out: res.timedOut || res.code === 137, stdout, stderr: (res.stderr || '').trim().slice(0, 2000) };
     }
     case 'check_site': {
-      const p = input.path || '/';
-      const lint = await lintPlugin(task);
-      const res = await sandboxHttp(task, p);
-      const debug = await readNew(task, '/tmp/wp-debug.log', 'debug');
-      const obs = parseObserver(await readNew(task, '/tmp/pb-observer.log', 'obs'));
-      const outbound = obs
-        .filter((o) => o.type === 'http' && !/^https?:\/\/([^/]+\.)?(wordpress\.org|w\.org)(\/|$)/i.test(o.url))
-        .map((o) => ({ url: o.url, result: o.error || 'ok' }));
+      const requestPath = input.path || '/';
+      const lintErrors = await lintPlugin(task);
+      const page = await sandboxHttp(task, requestPath);
+      const phpLog = await readNewLines(task, '/tmp/wp-debug.log');
+      const outbound = parseObserverLog(await readNewLines(task, '/tmp/pb-observer.log'))
+        .filter((entry) => entry.type === 'http' && !WP_CORE_HOST.test(entry.url))
+        .map((entry) => ({ url: entry.url, result: entry.error || 'ok' }));
       return {
-        path: p,
-        http_status: res.status,
-        timed_out: !!res.timedOut,
-        response_ms: res.ms,
-        critical_error_page: isCriticalPage(res.body),
-        php_lint_errors: lint,
-        new_php_log: debug.split('\n').filter((l) => l.trim()).slice(-15).join('\n'),
+        path: requestPath,
+        http_status: page.status,
+        timed_out: !!page.timedOut,
+        response_ms: page.ms,
+        critical_error_page: isCriticalPage(page.body),
+        php_lint_errors: lintErrors,
+        new_php_log: phpLog.split('\n').filter((line) => line.trim()).slice(-15).join('\n'),
         outbound_connection_attempts: outbound,
-        note: outbound.length ? 'Sandbox tidak punya akses internet; semua koneksi keluar gagal.' : undefined,
-        page_text_excerpt: textExcerpt(res.body, 900),
+        note: outbound.length ? 'The sandbox has no internet access; every outbound connection fails.' : undefined,
+        page_text_excerpt: textExcerpt(page.body, 900),
       };
     }
     case 'wp_guide': {
       if (!input.doc) return { guides: guideIndex() };
-      const text = readGuide(input.doc);
-      if (!text) return { error: `Panduan tidak ditemukan: ${input.doc}`, guides: guideIndex().map((g) => g.id) };
-      return { doc: input.doc, source: 'WordPress/agent-skills (official)', content: text };
+      const content = readGuide(input.doc);
+      if (!content) return { error: `Guide not found: ${input.doc}`, guides: guideIndex().map((g) => g.id) };
+      return { doc: input.doc, source: 'WordPress/agent-skills (official)', content };
     }
     case 'finish':
       return { ok: true };
     default:
-      return { error: `Tool tidak dikenal: ${name}` };
+      return { error: `Unknown tool: ${name}` };
   }
 }
 
-// Short human label for the activity feed.
+const shorten = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/** One-line label for the activity feed when a tool call starts. */
 export function describeCall(name, input) {
   switch (name) {
     case 'list_files':
-      return 'Melihat isi plugin kustom';
+      return 'Listing the custom plugin';
     case 'read_file':
-      return `Membaca ${input.path}`;
+      return `Reading ${input.path}`;
     case 'write_file':
-      return `Menulis ${input.path}`;
+      return `Writing ${input.path}`;
     case 'run_wp':
-      return `wp ${(input.args || []).map((x) => (String(x).length > 60 ? String(x).slice(0, 57) + '...' : x)).join(' ')}`;
+      return `wp ${(input.args || []).map((arg) => shorten(String(arg), 60)).join(' ')}`;
     case 'check_site':
-      return `Menguji situs sandbox ${input.path || '/'}`;
+      return `Testing the sandbox site ${input.path || '/'}`;
     case 'wp_guide':
-      return input.doc ? `Membaca panduan resmi WordPress: ${input.doc}` : 'Melihat daftar panduan resmi WordPress';
+      return input.doc ? `Reading official WordPress guide: ${input.doc}` : 'Listing official WordPress guides';
     case 'finish':
-      return 'Selesai';
+      return 'Done';
     default:
       return name;
   }
 }
 
-export function describeResult(name, out) {
-  if (out && out.error) return `Ditolak/gagal: ${out.error}`;
+/** One-line label for the activity feed when a tool call returns. */
+export function describeResult(name, output) {
+  if (output?.error) return `Refused or failed: ${output.error}`;
   switch (name) {
     case 'list_files':
-      return `${out.files.length} file`;
+      return `${output.files.length} files`;
     case 'read_file':
-      return `${out.content.length} karakter`;
-    case 'wp_guide':
-      return out.guides ? `${out.guides.length} panduan tersedia` : `${out.content.length} karakter (WordPress/agent-skills)`;
+      return `${output.content.length} characters`;
     case 'write_file':
-      return `${out.bytes} byte ditulis (di sandbox)`;
+      return `${output.bytes} bytes written (in the sandbox)`;
     case 'run_wp':
-      return out.exit_code === 0 ? (out.stdout.trim().split('\n')[0] || 'OK').slice(0, 120) : `Error: ${(out.stderr || '').split('\n')[0]}`.slice(0, 160);
+      return output.exit_code === 0
+        ? shorten(output.stdout.trim().split('\n')[0] || 'OK', 120)
+        : shorten(`Error: ${(output.stderr || '').split('\n')[0]}`, 160);
     case 'check_site': {
-      const bits = [`HTTP ${out.http_status || 'tidak merespons'}`];
-      if (out.timed_out) bits.push('melewati batas waktu');
-      if (out.critical_error_page) bits.push('halaman error PHP');
-      if (out.php_lint_errors.length) bits.push(`${out.php_lint_errors.length} error sintaks`);
-      if (out.new_php_log) bits.push('ada log error PHP');
-      if (out.outbound_connection_attempts.length) bits.push(`${out.outbound_connection_attempts.length} percobaan koneksi keluar (diblokir)`);
-      if (bits.length === 1) bits.push('bersih');
-      return bits.join(', ');
+      const findings = [];
+      if (output.timed_out) findings.push('hit the time limit');
+      if (output.critical_error_page) findings.push('PHP error page');
+      if (output.php_lint_errors.length) findings.push(`${output.php_lint_errors.length} syntax errors`);
+      if (output.new_php_log) findings.push('PHP log entries');
+      if (output.outbound_connection_attempts.length) findings.push(`${output.outbound_connection_attempts.length} outbound connection attempts (blocked)`);
+      return [`HTTP ${output.http_status || 'no response'}`, ...(findings.length ? findings : ['clean'])].join(', ');
     }
+    case 'wp_guide':
+      return output.guides ? `${output.guides.length} guides available` : `${output.content.length} characters (WordPress/agent-skills)`;
     default:
       return 'OK';
   }
 }
-
-export { cfg };

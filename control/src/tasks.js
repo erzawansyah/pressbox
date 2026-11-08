@@ -1,138 +1,141 @@
 // Task orchestration: one chat request = one sandbox = one changeset.
+//
+// Lifecycle: cloning -> sandbox -> agent -> gate -> review | blocked | error,
+// then review -> applying -> applied | apply_failed, or review -> discarded.
+// Every exit path destroys the sandbox.
 import crypto from 'node:crypto';
 import { cfg } from './config.js';
-import { cloneLive, createSandbox, destroySandbox } from './sandbox.js';
+import { cloneProduction, createSandbox, destroySandbox } from './sandbox.js';
 import { runAgent } from './agent.js';
-import { runGate, snapshotBefore } from './gate.js';
-import { applyToLive, liveSnapshot } from './live.js';
+import { runGate, recordBaseline } from './gate.js';
+import { applyToProduction, productionSnapshot, readServerProfile } from './production.js';
 
+const MAX_MESSAGE_CHARS = 4000;
 const tasks = new Map();
-const history = []; // applied requests, fed back to the agent as context
-let running = null;
+const appliedHistory = []; // fed back to the agent so follow-up requests have context
+let runningTaskId = null;
 
 export const getTask = (id) => tasks.get(id);
-export const isBusy = () => !!running;
-export const listTasks = () => [...tasks.values()].map(taskView);
+export const isBusy = () => runningTaskId !== null;
+export const listTasks = () => [...tasks.values()].map(publicView);
 
-export function taskView(t) {
+/** What the browser may see: no API keys, timers, or listeners. */
+export function publicView(task) {
   return {
-    id: t.id,
-    message: t.message,
-    status: t.status,
-    createdAt: t.createdAt,
-    summary: t.summary || '',
-    verdict: t.verdict || null,
-    changeset: t.changeset,
-    sandbox: t.sandbox ? { name: t.sandbox.name, home: t.sandbox.home, alive: t.sandbox.alive } : null,
-    usage: t.usage || null,
-    applyResult: t.applyResult || null,
+    id: task.id,
+    message: task.message,
+    status: task.status,
+    createdAt: task.createdAt,
+    summary: task.summary || '',
+    verdict: task.verdict || null,
+    changeset: task.changeset,
+    sandbox: task.sandbox ? { name: task.sandbox.name, home: task.sandbox.home, alive: task.sandbox.alive } : null,
+    usage: task.usage || null,
+    applyResult: task.applyResult || null,
   };
 }
 
-function makeEmitter(task) {
-  return (type, data = {}) => {
-    const ev = { seq: task.events.length, t: Date.now(), type, ...data };
-    task.events.push(ev);
-    for (const fn of task.listeners) fn(ev);
-  };
-}
-
-export function createTask(message) {
+export function createTask(message, apiKey) {
   const task = {
     id: crypto.randomBytes(5).toString('hex'),
-    message: String(message).slice(0, 4000),
+    message: String(message).slice(0, MAX_MESSAGE_CHARS),
+    apiKey,
     status: 'queued',
     createdAt: Date.now(),
     events: [],
     listeners: new Set(),
     changeset: { files: {}, commands: [] },
   };
-  task.emit = makeEmitter(task);
+  task.emit = (type, fields = {}) => {
+    const event = { seq: task.events.length, t: Date.now(), type, ...fields };
+    task.events.push(event);
+    for (const listener of task.listeners) listener(event);
+  };
   task.log = (kind, text) => task.emit('containment', { kind, text });
   tasks.set(task.id, task);
   return task;
 }
 
-const setStatus = (task, status) => {
+function setStatus(task, status) {
   task.status = status;
   task.emit('status', { status });
-};
+}
 
 export async function runTask(task) {
-  running = task.id;
-  const timer = setTimeout(() => {
+  runningTaskId = task.id;
+  const deadline = setTimeout(() => {
     task.cancelled = true;
-    task.log('limit', `Batas waktu tugas ${Math.round(cfg.limits.taskTimeoutMs / 60000)} menit tercapai; agen dihentikan.`);
+    task.log('limit', `Task time limit of ${Math.round(cfg.limits.taskTimeoutMs / 60000)} minutes reached; the agent was stopped.`);
   }, cfg.limits.taskTimeoutMs);
   try {
-    task.liveBefore = await liveSnapshot();
+    task.productionBefore = await productionSnapshot();
+    task.profile = await readServerProfile();
+    if (task.profile) task.emit('profile', { profile: task.profile });
+
     setStatus(task, 'cloning');
-    await cloneLive(task, task.log);
+    await cloneProduction(task, task.log);
     setStatus(task, 'sandbox');
     await createSandbox(task, task.log);
-    await snapshotBefore(task);
+    await recordBaseline(task);
     task.emit('preview', { url: `${task.sandbox.home}/` });
 
     setStatus(task, 'agent');
-    const result = await runAgent(task, task.emit, history);
+    const outcome = await runAgent(task, task.emit, appliedHistory);
     task.emit('changeset', { changeset: task.changeset });
     if (task.summary) task.emit('summary', { text: task.summary });
 
     setStatus(task, 'gate');
-    task.verdict = await runGate(task, result);
+    task.verdict = await runGate(task, outcome);
     task.emit('verdict', { verdict: task.verdict });
 
     if (task.verdict.pass) {
       setStatus(task, 'review');
-      task.ttlTimer = setTimeout(() => discardTask(task, `tidak ditinjau dalam ${Math.round(cfg.limits.sandboxTtlMs / 60000)} menit`), cfg.limits.sandboxTtlMs);
+      const ttlMinutes = Math.round(cfg.limits.sandboxTtlMs / 60000);
+      task.ttlTimer = setTimeout(() => discardTask(task, `not reviewed within ${ttlMinutes} minutes`), cfg.limits.sandboxTtlMs);
     } else {
-      await destroySandbox(task, 'diblokir gerbang', task.log);
-      await reportLiveUntouched(task);
+      await destroySandbox(task, 'blocked by the gate', task.log);
+      await reportProductionUntouched(task);
       setStatus(task, 'blocked');
     }
-  } catch (e) {
-    task.emit('error', { message: e.message });
-    await destroySandbox(task, 'error', task.log).catch(() => {});
+  } catch (err) {
+    task.emit('error', { message: err.message });
+    await destroySandbox(task, 'error', task.log).catch((cleanupErr) => task.log('destroy', `Cleanup failed: ${cleanupErr.message}`));
     setStatus(task, 'error');
   } finally {
-    clearTimeout(timer);
-    running = null;
+    clearTimeout(deadline);
+    runningTaskId = null;
   }
 }
 
-async function reportLiveUntouched(task) {
-  const after = await liveSnapshot();
-  const b = task.liveBefore;
-  const same = b && after.admins === b.admins && after.pluginFiles === b.pluginFiles && after.homeStatus === b.homeStatus;
+async function reportProductionUntouched(task) {
+  const before = task.productionBefore;
+  const after = await productionSnapshot();
+  const unchanged = before && after.admins === before.admins && after.pluginFiles === before.pluginFiles && after.homeStatus === before.homeStatus;
   task.log(
     'live',
-    same
-      ? `Situs live tidak tersentuh: admin sama (${after.admins}), ${after.pluginFiles} file plugin sama, beranda HTTP ${after.homeStatus}.`
-      : `PERHATIAN: kondisi live berbeda dari sebelum tugas (sebelum ${JSON.stringify(b)}, sesudah ${JSON.stringify(after)}).`,
+    unchanged
+      ? `Production untouched: same administrators (${after.admins}), same ${after.pluginFiles} plugin files, home page HTTP ${after.homeStatus}.`
+      : `ATTENTION: production differs from before the task (before ${JSON.stringify(before)}, after ${JSON.stringify(after)}).`,
   );
 }
 
 export async function applyTask(task) {
-  if (task.status !== 'review' || !task.verdict?.pass) throw new Error('Hanya tugas berstatus LOLOS yang bisa diterapkan.');
+  if (task.status !== 'review' || !task.verdict?.pass) throw new Error('Only a task that passed the gate can be applied.');
   clearTimeout(task.ttlTimer);
   setStatus(task, 'applying');
-  const res = await applyToLive(task, task.log);
-  task.applyResult = res;
-  await destroySandbox(task, res.ok ? 'diterapkan ke live' : 'penerapan gagal', task.log);
-  if (res.ok) {
-    history.push({ message: task.message, summary: task.summary });
-    setStatus(task, 'applied');
-  } else {
-    setStatus(task, 'apply_failed');
-  }
-  task.emit('applied', { result: res });
-  return res;
+  const result = await applyToProduction(task, task.log);
+  task.applyResult = result;
+  await destroySandbox(task, result.ok ? 'applied to production' : 'apply failed', task.log);
+  if (result.ok) appliedHistory.push({ message: task.message, summary: task.summary });
+  setStatus(task, result.ok ? 'applied' : 'apply_failed');
+  task.emit('applied', { result });
+  return result;
 }
 
-export async function discardTask(task, reason = 'dibuang pemilik situs') {
-  if (!['review'].includes(task.status)) return;
+export async function discardTask(task, reason = 'discarded by the site owner') {
+  if (task.status !== 'review') return;
   clearTimeout(task.ttlTimer);
   await destroySandbox(task, reason, task.log);
-  await reportLiveUntouched(task);
+  await reportProductionUntouched(task);
   setStatus(task, 'discarded');
 }

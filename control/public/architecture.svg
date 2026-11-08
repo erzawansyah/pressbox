@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" font-family="Space Grotesk, Segoe UI, sans-serif" role="img" aria-label="PressBox architecture on Vultr">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#93a0bb"/>
+    </marker>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/><stop offset="0.55" stop-color="#22d3a6"/><stop offset="1" stop-color="#d9f99d"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="470" rx="18" fill="#0b1020"/>
+
+  <!-- Vultr VM boundary -->
+  <rect x="190" y="40" width="560" height="400" rx="16" fill="none" stroke="#26304f" stroke-width="2" stroke-dasharray="6 6"/>
+  <text x="206" y="66" fill="#93a0bb" font-size="14">Vultr Cloud Compute VM (Singapore)</text>
+
+  <!-- Owner -->
+  <rect x="20" y="170" width="140" height="90" rx="12" fill="#111830" stroke="#26304f"/>
+  <text x="90" y="205" fill="#e7ecf6" font-size="16" font-weight="600" text-anchor="middle">Site owner</text>
+  <text x="90" y="228" fill="#93a0bb" font-size="13" text-anchor="middle">chat, preview,</text>
+  <text x="90" y="246" fill="#93a0bb" font-size="13" text-anchor="middle">approve</text>
+
+  <!-- Control plane -->
+  <rect x="215" y="90" width="250" height="180" rx="12" fill="#111830" stroke="url(#edge)" stroke-width="2"/>
+  <text x="340" y="120" fill="#e7ecf6" font-size="17" font-weight="700" text-anchor="middle">Control plane</text>
+  <text x="235" y="150" fill="#93a0bb" font-size="13">• agent loop (brain)</text>
+  <text x="235" y="172" fill="#93a0bb" font-size="13">• clone + redact secrets</text>
+  <text x="235" y="194" fill="#93a0bb" font-size="13">• deterministic gate</text>
+  <text x="235" y="216" fill="#93a0bb" font-size="13">• replay changeset + rollback</text>
+  <text x="235" y="238" fill="#93a0bb" font-size="13">• holds API keys, has internet</text>
+  <text x="235" y="258" fill="#93a0bb" font-size="13">• never runs agent code</text>
+
+  <!-- Sandbox -->
+  <rect x="500" y="90" width="230" height="180" rx="12" fill="#111830" stroke="#fb7185" stroke-width="2"/>
+  <text x="615" y="120" fill="#e7ecf6" font-size="17" font-weight="700" text-anchor="middle">Disposable sandbox</text>
+  <text x="518" y="150" fill="#93a0bb" font-size="13">• WordPress copy (redacted)</text>
+  <text x="518" y="172" fill="#93a0bb" font-size="13">• agent's hands: files, WP-CLI</text>
+  <text x="518" y="194" fill="#93a0bb" font-size="13">• internal network, no internet</text>
+  <text x="518" y="216" fill="#93a0bb" font-size="13">• no keys, non-root, caps dropped</text>
+  <text x="518" y="238" fill="#93a0bb" font-size="13">• RAM / CPU / PID / time limits</text>
+  <text x="518" y="258" fill="#93a0bb" font-size="13">• destroyed after every task</text>
+
+  <!-- Production -->
+  <rect x="215" y="310" width="250" height="110" rx="12" fill="#111830" stroke="#34d399" stroke-width="2"/>
+  <text x="340" y="340" fill="#e7ecf6" font-size="17" font-weight="700" text-anchor="middle">Production WordPress</text>
+  <text x="235" y="368" fill="#93a0bb" font-size="13">• PressBox MU-plugin: server profile,</text>
+  <text x="235" y="388" fill="#93a0bb" font-size="13">  locks plugin installs in wp-admin</text>
+  <text x="235" y="408" fill="#93a0bb" font-size="13">• one theme + one custom plugin</text>
+
+  <!-- Inference -->
+  <rect x="790" y="110" width="150" height="140" rx="12" fill="#111830" stroke="#38bdf8" stroke-width="2"/>
+  <text x="865" y="142" fill="#e7ecf6" font-size="15" font-weight="700" text-anchor="middle">Vultr Serverless</text>
+  <text x="865" y="162" fill="#e7ecf6" font-size="15" font-weight="700" text-anchor="middle">Inference</text>
+  <text x="865" y="192" fill="#93a0bb" font-size="13" text-anchor="middle">DeepSeek V4.1</text>
+  <text x="865" y="212" fill="#93a0bb" font-size="13" text-anchor="middle">Flash</text>
+  <text x="865" y="234" fill="#93a0bb" font-size="12" text-anchor="middle">OpenAI-compatible</text>
+
+  <!-- arrows -->
+  <line x1="160" y1="205" x2="212" y2="185" stroke="#93a0bb" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="465" y1="170" x2="497" y2="170" stroke="#93a0bb" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="481" y="160" fill="#93a0bb" font-size="11" text-anchor="middle">exec</text>
+  <path d="M465 120 C 600 30, 760 40, 840 107" fill="none" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="640" y="56" fill="#38bdf8" font-size="12" text-anchor="middle">LLM calls (key stays here)</text>
+  <line x1="340" y1="308" x2="340" y2="273" stroke="#93a0bb" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="350" y="295" fill="#93a0bb" font-size="11">clone / replay after approval</text>
+  <line x1="733" y1="200" x2="787" y2="200" stroke="#fb7185" stroke-width="3" stroke-dasharray="4 4"/>
+  <text x="760" y="222" fill="#fb7185" font-size="12" text-anchor="middle">✕ no route</text>
+  <line x1="560" y1="273" x2="440" y2="308" stroke="#fb7185" stroke-width="3" stroke-dasharray="4 4"/>
+  <text x="560" y="300" fill="#fb7185" font-size="12">✕ cannot reach production</text>
+</svg>

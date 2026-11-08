@@ -1,65 +1,140 @@
-// PressBox chat UI. Plain JS, no build step.
-const $ = (s, el = document) => el.querySelector(s);
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const fmtTime = (t) => new Date(t).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+// PressBox chat UI. Plain browser JavaScript, no build step.
+const $ = (selector, root = document) => root.querySelector(selector);
+const escapeHtml = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const clock = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-let STATE = null;
-let current = null; // { id, card, steps, previewPath }
-
-const STATUS_TEXT = {
-  queued: ['Antre', 'run'],
-  cloning: ['Menyalin situs live', 'run'],
-  sandbox: ['Menyiapkan sandbox', 'run'],
-  agent: ['Agen bekerja', 'run'],
-  gate: ['Menguji di gerbang', 'run'],
-  review: ['Lolos, menunggu persetujuanmu', 'ok'],
-  applying: ['Menerapkan ke live', 'run'],
-  applied: ['Sudah live', 'ok'],
-  apply_failed: ['Gagal diterapkan, live dikembalikan', 'bad'],
-  blocked: ['Diblokir', 'bad'],
-  discarded: ['Dibuang', ''],
+const SESSION_KEY = 'pressbox-session';
+const FINAL_STATUSES = ['review', 'applied', 'apply_failed', 'blocked', 'discarded', 'error'];
+const STATUS_LABELS = {
+  queued: ['Queued', 'run'],
+  cloning: ['Copying production', 'run'],
+  sandbox: ['Starting sandbox', 'run'],
+  agent: ['Agent working', 'run'],
+  gate: ['Running the gate', 'run'],
+  review: ['Passed, waiting for you', 'ok'],
+  applying: ['Applying to production', 'run'],
+  applied: ['Live on production', 'ok'],
+  apply_failed: ['Apply failed, production restored', 'bad'],
+  blocked: ['Blocked', 'bad'],
+  discarded: ['Discarded', ''],
   error: ['Error', 'bad'],
 };
+const LOG_KINDS = { clone: 'copy', sanitize: 'redact', create: 'sandbox', destroy: 'destroy', live: 'production', backup: 'backup', apply: 'apply', rollback: 'rollback', limit: 'limit' };
 
-// ---------- tabs ----------
-document.querySelectorAll('.tab').forEach((b) =>
-  b.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === b));
-    document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('active', p.id === `pane-${b.dataset.tab}`));
+let appState = null;
+let current = null; // the task card on screen: { id, card, steps, previewBase, previewPath, lastSeq }
+
+function readSession() {
+  try {
+    return sessionStorage.getItem(SESSION_KEY) || '';
+  } catch {
+    return ''; // storage blocked (private mode); the visitor unlocks again each load
+  }
+}
+function storeSession(token) {
+  try {
+    sessionStorage.setItem(SESSION_KEY, token);
+  } catch {
+    // storage blocked; the token still works for this page view
+  }
+}
+const apiHeaders = () => ({ 'Content-Type': 'application/json', 'X-PressBox-Session': readSession() });
+
+// Tabs
+document.querySelectorAll('.tab').forEach((button) =>
+  button.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b === button));
+    document.querySelectorAll('.pane').forEach((pane) => pane.classList.toggle('active', pane.id === `pane-${button.dataset.tab}`));
   }),
 );
 const showTab = (name) => document.querySelector(`.tab[data-tab="${name}"]`).click();
 
-// ---------- init ----------
-async function init() {
-  STATE = await (await fetch('/api/state')).json();
-  const llm = $('#llm-pill');
-  if (STATE.mode === 'scripted') {
+async function loadState() {
+  appState = await (await fetch('/api/state', { headers: apiHeaders() })).json();
+  renderModel();
+  renderAccess();
+  renderProfile(appState.profile);
+  const limits = appState.limits;
+  $('#limits-text').textContent = `RAM ${limits.memory}, ${limits.cpus} CPU, max ${limits.pids} processes, PHP limits copied from production, max ${limits.agentMaxSteps} agent steps.`;
+  $('#live-url').textContent = appState.livePublicUrl;
+  if (!$('#live-frame').src) $('#live-frame').src = `${appState.livePublicUrl}/`;
+  setBusy(appState.busy);
+}
+
+function renderModel() {
+  const pill = $('#llm-pill');
+  if (appState.mode === 'scripted') {
     $('#scripted-banner').hidden = false;
-    llm.textContent = 'Mode skrip (tanpa LLM)';
-    llm.classList.add('warn');
-  } else {
-    llm.textContent = `${STATE.provider} · ${STATE.model || 'model?'}`;
-    if (STATE.usesVultr) llm.classList.add('vultr');
-    else llm.classList.add('warn');
+    pill.textContent = 'Scripted mode (no LLM)';
+    pill.className = 'pill warn';
+    return;
   }
-  $('#limits-text').textContent = `RAM ${STATE.limits.memory}, CPU ${STATE.limits.cpus}, maks ${STATE.limits.pids} proses, 20 detik per request PHP, maks ${STATE.limits.agentMaxSteps} langkah agen.`;
-  $('#live-url').textContent = STATE.livePublicUrl;
-  $('#live-frame').src = STATE.livePublicUrl + '/';
-  setBusy(STATE.busy);
+  pill.textContent = `${appState.provider} · ${appState.model || 'model not set'}`;
+  pill.className = `pill ${appState.usesVultr ? 'vultr' : 'warn'}`;
 }
 
-function setBusy(b) {
-  $('#send').disabled = b;
-  $('#input').disabled = b;
+function renderAccess() {
+  const { access } = appState;
+  const unlocked = !access.required || access.session.kind !== 'none';
+  $('#access').hidden = unlocked;
+  $('#key-form').hidden = !access.ownKeyAllowed;
+  $('#composer').hidden = !unlocked;
+  $('#chips').hidden = !unlocked;
+  const quota = $('#quota');
+  if (!access.required) quota.textContent = '';
+  else if (access.session.kind === 'judge') quota.textContent = `Judge access · ${access.session.remaining} agent runs left in the shared quota`;
+  else if (access.session.kind === 'own-key') quota.textContent = 'Using your own Vultr key for this session';
+  else quota.textContent = '';
 }
 
-// ---------- composer ----------
+function renderProfile(profile) {
+  const box = $('#profile');
+  if (!profile) {
+    box.innerHTML = '<div class="wide">The server profile is not available.</div>';
+    return;
+  }
+  box.innerHTML = `
+    <div><b>PHP</b>${escapeHtml(profile.php_version)}</div>
+    <div><b>Memory / request</b>${escapeHtml(profile.php_memory_limit)}</div>
+    <div><b>Time / request</b>${escapeHtml(profile.max_execution_time)}s</div>
+    <div><b>WordPress</b>${escapeHtml(profile.wp_version)}</div>
+    <div><b>Database</b>${escapeHtml(profile.database)}</div>
+    <div><b>Theme</b>${escapeHtml(profile.theme.name)}${profile.theme.block_theme ? ' (block)' : ''}</div>
+    <div class="wide"><b>Extensions available</b>${escapeHtml(profile.extensions.join(', '))}</div>
+    <div class="wide"><b>Not available (the gate rejects code that needs these)</b>${escapeHtml(profile.missing_extensions.join(', ') || 'none')}</div>
+    <div class="wide"><b>Source</b>PressBox MU-plugin on production (<code>wp pressbox profile</code>). Sandboxes copy these PHP limits.</div>`;
+}
+
+function setBusy(busy) {
+  $('#send').disabled = busy;
+  $('#input').disabled = busy;
+}
+
+async function unlock(body) {
+  $('#access-error').textContent = '';
+  const res = await fetch('/api/session', { method: 'POST', headers: apiHeaders(), body: JSON.stringify(body) });
+  const reply = await res.json();
+  if (!res.ok) {
+    $('#access-error').textContent = reply.error || 'Could not unlock.';
+    return;
+  }
+  storeSession(reply.token);
+  await loadState();
+}
+$('#code-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  unlock({ code: $('#code-input').value });
+});
+$('#key-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  unlock({ apiKey: $('#key-input').value });
+});
+
+// Composer
 $('#chips').addEventListener('click', (e) => {
-  if (e.target.dataset.msg) {
-    $('#input').value = e.target.dataset.msg;
-    $('#input').focus();
-  }
+  if (!e.target.dataset.msg) return;
+  $('#input').value = e.target.dataset.msg;
+  $('#input').focus();
 });
 $('#input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -72,134 +147,133 @@ $('#composer').addEventListener('submit', async (e) => {
   const message = $('#input').value.trim();
   if (!message) return;
   setBusy(true);
-  const r = await fetch('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) });
-  const data = await r.json();
-  if (!r.ok) {
-    alert(data.error || 'Gagal mengirim');
+  const res = await fetch('/api/tasks', { method: 'POST', headers: apiHeaders(), body: JSON.stringify({ message }) });
+  const reply = await res.json();
+  if (!res.ok) {
+    alert(reply.error || 'Could not send the request.');
     setBusy(false);
+    await loadState();
     return;
   }
   $('#input').value = '';
-  startTask(data.id, message);
+  startTask(reply.id, message);
+  loadState();
 });
 
-// ---------- task rendering ----------
 function startTask(id, message) {
   $('.hello')?.remove();
-  const thread = $('#thread');
-  thread.insertAdjacentHTML('beforeend', `<div class="msg-user">${esc(message)}</div>`);
+  $('#thread').insertAdjacentHTML('beforeend', `<div class="msg-user">${escapeHtml(message)}</div>`);
   const card = document.createElement('div');
   card.className = 'card';
   card.innerHTML = `
-    <div class="card-head"><span class="card-title">PressBox</span><span class="status run">Memulai</span></div>
+    <div class="card-head"><span class="card-title">PressBox</span><span class="status run">Starting</span></div>
     <ul class="steps"></ul>
     <div class="slot-summary"></div>
     <div class="slot-verdict"></div>`;
-  thread.appendChild(card);
-  current = { id, card, steps: new Map(), previewPath: '/' };
+  $('#thread').appendChild(card);
+  current = { id, card, steps: new Map(), previewPath: '/', lastSeq: -1 };
   $('#clog').innerHTML = '';
-  document.querySelectorAll('.rule').forEach((r) => r.classList.remove('on'));
-  $('#changes').innerHTML = '<div class="empty">Agen sedang bekerja…</div>';
+  document.querySelectorAll('.rule').forEach((rule) => rule.classList.remove('on'));
+  $('#changes').innerHTML = '<div class="empty">The agent is working…</div>';
   $('#changes-count').textContent = '';
   resetPreview();
-
-  const es = new EventSource(`/api/tasks/${id}/events`);
-  es.onmessage = (m) => handle(JSON.parse(m.data));
-  current.es = es;
+  current.events = new EventSource(`/api/tasks/${id}/events`);
+  current.events.onmessage = (msg) => handleEvent(JSON.parse(msg.data));
 }
 
-function addStep(html, cls = '') {
-  const li = document.createElement('li');
-  li.className = `step ${cls}`;
-  li.innerHTML = html;
-  $('.steps', current.card).appendChild(li);
+function addStep(html, className = '') {
+  const item = document.createElement('li');
+  item.className = `step ${className}`;
+  item.innerHTML = html;
+  $('.steps', current.card).appendChild(item);
   $('#thread').scrollTop = $('#thread').scrollHeight;
-  return li;
+  return item;
 }
 
 function setStatus(status) {
-  const [text, cls] = STATUS_TEXT[status] || [status, ''];
-  const el = $('.status', current.card);
-  el.textContent = text;
-  el.className = `status ${cls}`;
-  if (['review', 'applied', 'apply_failed', 'blocked', 'discarded', 'error'].includes(status)) {
-    current.es?.close();
+  const [text, tone] = STATUS_LABELS[status] || [status, ''];
+  const badge = $('.status', current.card);
+  badge.textContent = text;
+  badge.className = `status ${tone}`;
+  if (FINAL_STATUSES.includes(status)) {
+    current.events?.close();
     setBusy(false);
-    if (status !== 'review') $('#thread').scrollTop = $('#thread').scrollHeight;
   }
 }
 
-function handle(ev) {
-  current.lastSeq = ev.seq;
-  switch (ev.type) {
+function handleEvent(event) {
+  current.lastSeq = event.seq;
+  switch (event.type) {
     case 'status':
-      setStatus(ev.status);
+      setStatus(event.status);
+      break;
+    case 'profile':
+      renderProfile(event.profile);
       break;
     case 'thinking':
       current.thinking?.remove();
-      current.thinking = addStep('<span class="ic"><span class="spin"></span></span><span class="lbl">Agen berpikir…</span>', 'sys');
+      current.thinking = addStep('<span class="ic"><span class="spin"></span></span><span class="lbl">Agent thinking…</span>', 'sys');
       break;
     case 'agent_text':
       current.thinking?.remove();
-      addStep(`<span class="ic">💬</span><span class="lbl">${esc(ev.text)}</span>`, 'think');
+      addStep(`<span class="ic">💬</span><span class="lbl">${escapeHtml(event.text)}</span>`, 'think');
       break;
     case 'tool_start': {
       current.thinking?.remove();
-      const li = addStep(`<span class="ic"><span class="spin"></span></span><span><div class="lbl">${esc(ev.label)}</div><div class="res"></div></span>`);
-      current.steps.set(ev.id, li);
-      if (ev.name === 'check_site' && ev.input?.path) current.previewPath = ev.input.path;
+      const item = addStep(`<span class="ic"><span class="spin"></span></span><span><div class="lbl">${escapeHtml(event.label)}</div><div class="res"></div></span>`);
+      current.steps.set(event.id, item);
+      if (event.name === 'check_site' && event.input?.path) current.previewPath = event.input.path;
       break;
     }
-    case 'tool_end': {
-      const li = current.steps.get(ev.id);
-      if (!li) break;
-      $('.ic', li).textContent = ev.ok ? '✓' : '✕';
-      if (!ev.ok) li.classList.add('err');
-      $('.res', li).textContent = ev.label;
-      if (ev.name === 'check_site' && ev.detail) {
-        const d = ev.detail;
-        if (d.critical_error_page || d.timed_out || d.php_lint_errors?.length) li.classList.add('err');
-        if (d.outbound_connection_attempts?.length) li.classList.add('err');
-        if (d.new_php_log) {
-          li.querySelector('.res').insertAdjacentHTML('afterend', `<details class="res"><summary>Log PHP</summary><pre class="cmds">${esc(d.new_php_log)}</pre></details>`);
-        }
-        refreshPreview();
-      }
+    case 'tool_end':
+      finishStep(event);
       break;
-    }
     case 'containment':
-      addContainment(ev);
-      if (['create', 'destroy', 'sanitize'].includes(ev.kind)) {
-        const label = { create: 'Sandbox dibuat', destroy: 'Sandbox dihancurkan', sanitize: 'Data rahasia disamarkan' }[ev.kind];
-        addStep(`<span class="ic">${ev.kind === 'destroy' ? '🗑' : '▣'}</span><span class="lbl">${label}</span>`, 'sys');
+      addContainmentEntry(event);
+      if (['create', 'destroy', 'sanitize'].includes(event.kind)) {
+        const label = { create: 'Sandbox created', destroy: 'Sandbox destroyed', sanitize: 'Secrets redacted' }[event.kind];
+        addStep(`<span class="ic">${event.kind === 'destroy' ? '🗑' : '▣'}</span><span class="lbl">${label}</span>`, 'sys');
       }
       break;
     case 'preview':
-      current.previewBase = ev.url.replace(/\/$/, '');
+      current.previewBase = event.url.replace(/\/$/, '');
       break;
     case 'changeset':
-      renderChanges(ev.changeset);
+      renderChanges(event.changeset);
       break;
     case 'summary':
-      $('.slot-summary', current.card).innerHTML = `<div class="summary">${esc(ev.text)}</div>`;
+      $('.slot-summary', current.card).innerHTML = `<div class="summary">${escapeHtml(event.text)}</div>`;
       break;
     case 'verdict':
-      renderVerdict(ev.verdict);
+      renderVerdict(event.verdict);
       break;
     case 'applied':
-      renderApplied(ev.result);
+      renderApplied(event.result);
       break;
     case 'error':
       current.thinking?.remove();
-      $('.slot-verdict', current.card).insertAdjacentHTML('beforeend', `<div class="error-box">${esc(ev.message)}</div>`);
+      $('.slot-verdict', current.card).insertAdjacentHTML('beforeend', `<div class="error-box">${escapeHtml(event.message)}</div>`);
       break;
   }
 }
 
-// ---------- preview ----------
+function finishStep(event) {
+  const item = current.steps.get(event.id);
+  if (!item) return;
+  $('.ic', item).textContent = event.ok ? '✓' : '✕';
+  $('.res', item).textContent = event.label;
+  const check = event.detail;
+  const failed = !event.ok || (check && (check.critical_error_page || check.timed_out || check.php_lint_errors?.length || check.outbound_connection_attempts?.length));
+  if (failed) item.classList.add('err');
+  if (check?.new_php_log) {
+    $('.res', item).insertAdjacentHTML('afterend', `<details class="res"><summary>PHP log</summary><pre class="cmds">${escapeHtml(check.new_php_log)}</pre></details>`);
+  }
+  if (event.name === 'check_site') refreshPreview();
+}
+
 function resetPreview() {
   $('#preview-frame').src = 'about:blank';
-  $('#preview-url').textContent = 'Menyiapkan sandbox…';
+  $('#preview-url').textContent = 'Starting sandbox…';
   $('#preview-empty').hidden = false;
 }
 function refreshPreview() {
@@ -209,141 +283,141 @@ function refreshPreview() {
   $('#preview-frame').src = url;
   $('#preview-empty').hidden = true;
 }
-function sandboxGone() {
+function showSandboxGone() {
   $('#preview-frame').src = 'about:blank';
-  $('#preview-url').textContent = 'Sandbox sudah dihancurkan';
+  $('#preview-url').textContent = 'Sandbox destroyed';
   $('#preview-empty').hidden = false;
-  $('#preview-empty').textContent = 'Sandbox untuk tugas ini sudah dihancurkan.';
+  $('#preview-empty').textContent = 'The sandbox for this task has been destroyed.';
 }
 
-// ---------- verdict ----------
-function renderVerdict(v) {
+function renderVerdict(verdict) {
   const slot = $('.slot-verdict', current.card);
-  const checks = v.checks.map((c) => `<li><span>${c.ok ? '✓' : '✕'}</span><span>${esc(c.name)} <span class="d">· ${esc(c.detail)}</span></span></li>`).join('');
+  const checks = verdict.checks
+    .map((c) => `<li><span>${c.ok ? '✓' : '✕'}</span><span>${escapeHtml(c.name)} <span class="d">· ${escapeHtml(c.detail)}</span></span></li>`)
+    .join('');
   slot.innerHTML = `
-    <div class="verdict ${v.pass ? 'pass' : 'fail'}">
-      <h4>${v.pass ? 'LOLOS gerbang uji' : 'DIBLOKIR gerbang uji'}</h4>
+    <div class="verdict ${verdict.pass ? 'pass' : 'fail'}">
+      <h4>${verdict.pass ? 'PASSED the gate' : 'BLOCKED by the gate'}</h4>
       <ul class="checks">${checks}</ul>
       ${
-        v.pass
-          ? `<div class="actions"><button class="btn primary" data-act="apply">Terapkan ke live</button><button class="btn" data-act="discard">Buang</button></div>
-             <div class="note">Cek dulu tab Preview sandbox dan Perubahan. Situs live belum berubah.</div>`
-          : `<div class="note">Perubahan ini tidak bisa diterapkan. Sandbox dihancurkan; situs live tidak tersentuh.</div>`
+        verdict.pass
+          ? `<div class="actions"><button class="pb-button primary" data-act="apply">Apply to production</button><button class="pb-button" data-act="discard">Discard</button></div>
+             <div class="note">Check the Sandbox preview and Changes tabs first. Production has not changed yet.</div>`
+          : '<div class="note">This change cannot be applied. The sandbox has been destroyed; production was not touched.</div>'
       }
     </div>`;
-  if (v.pass) {
+  if (verdict.pass) {
     showTab('preview');
     refreshPreview();
-    slot.querySelector('[data-act="apply"]').onclick = (e) => act('apply', e.target);
-    slot.querySelector('[data-act="discard"]').onclick = (e) => act('discard', e.target);
+    slot.querySelector('[data-act="apply"]').onclick = (e) => decide('apply', e.target);
+    slot.querySelector('[data-act="discard"]').onclick = (e) => decide('discard', e.target);
   } else {
-    document.querySelectorAll('#clog li').length && showTab('containment');
-    sandboxGone();
+    showTab('containment');
+    showSandboxGone();
   }
 }
 
-async function act(action, btn) {
+async function decide(action, button) {
   const id = current.id;
-  btn.closest('.actions').querySelectorAll('button').forEach((b) => (b.disabled = true));
-  btn.textContent = action === 'apply' ? 'Menerapkan…' : 'Membuang…';
-  const es = new EventSource(`/api/tasks/${id}/events?from=${current.lastSeq + 1 || 0}`);
-  es.onmessage = (m) => {
-    const ev = JSON.parse(m.data);
-    if (ev.type === 'containment') addContainment(ev);
-    if (ev.type === 'status') {
-      setStatus(ev.status);
-      if (['applied', 'apply_failed', 'discarded'].includes(ev.status)) es.close();
+  button.closest('.actions').querySelectorAll('button').forEach((b) => (b.disabled = true));
+  button.textContent = action === 'apply' ? 'Applying…' : 'Discarding…';
+  const followUp = new EventSource(`/api/tasks/${id}/events?from=${current.lastSeq + 1}`);
+  followUp.onmessage = (msg) => {
+    const event = JSON.parse(msg.data);
+    current.lastSeq = event.seq;
+    if (event.type === 'containment') addContainmentEntry(event);
+    if (event.type === 'status') {
+      setStatus(event.status);
+      if (['applied', 'apply_failed', 'discarded'].includes(event.status)) followUp.close();
     }
   };
-  const r = await fetch(`/api/tasks/${id}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-  const data = await r.json();
-  if (action === 'apply') renderApplied(data);
-  else {
-    btn.closest('.actions').insertAdjacentHTML('afterend', '<div class="note">Perubahan dibuang. Situs live tetap seperti semula.</div>');
-    sandboxGone();
+  const res = await fetch(`/api/tasks/${id}/${action}`, { method: 'POST', headers: apiHeaders(), body: '{}' });
+  const result = await res.json();
+  if (action === 'apply') {
+    renderApplied(result);
+  } else {
+    button.closest('.actions').insertAdjacentHTML('afterend', '<div class="note">Discarded. Production is unchanged.</div>');
+    showSandboxGone();
   }
 }
 
-function renderApplied(res) {
-  if (!res || current.appliedShown) return;
+function renderApplied(result) {
+  if (!result || current.appliedShown) return;
   current.appliedShown = true;
   const slot = $('.slot-verdict', current.card);
-  if (res.ok) {
-    slot.insertAdjacentHTML('beforeend', `<div class="note">✓ Sudah diterapkan ke live. Backup: <code>${esc(res.backup)}</code></div>`);
-    $('#live-frame').src = STATE.livePublicUrl + current.previewPath;
+  if (result.ok) {
+    slot.insertAdjacentHTML('beforeend', `<div class="note">✓ Applied to production. Backup: <code>${escapeHtml(result.backup)}</code></div>`);
+    $('#live-frame').src = appState.livePublicUrl + current.previewPath;
     showTab('live');
   } else {
-    slot.insertAdjacentHTML('beforeend', `<div class="error-box">Gagal diterapkan: ${esc(res.error)}. Live dikembalikan dari backup.</div>`);
+    slot.insertAdjacentHTML('beforeend', `<div class="error-box">Apply failed: ${escapeHtml(result.error)}. Production was restored from the backup.</div>`);
   }
-  sandboxGone();
+  showSandboxGone();
 }
 
-// ---------- containment log ----------
-const KIND = { clone: 'salin', sanitize: 'sanitasi', create: 'sandbox', destroy: 'hancurkan', live: 'live', backup: 'backup', apply: 'terapkan', rollback: 'rollback', limit: 'batas' };
-function addContainment(ev) {
-  current.lastSeq = Math.max(current.lastSeq || 0, ev.seq);
-  const li = document.createElement('li');
-  li.className = ev.kind;
-  li.innerHTML = `<span class="t">${fmtTime(ev.t)}</span><span class="k">${esc(KIND[ev.kind] || ev.kind)}</span><span>${esc(ev.text)}</span>`;
-  $('#clog').appendChild(li);
-  const on = (r) => document.querySelector(`.rule[data-rule="${r}"]`).classList.add('on');
-  if (ev.kind === 'create') {
-    on('isolation');
-    on('limits');
+function addContainmentEntry(event) {
+  const item = document.createElement('li');
+  item.className = event.kind;
+  item.innerHTML = `<span class="t">${clock(event.t)}</span><span class="k">${escapeHtml(LOG_KINDS[event.kind] || event.kind)}</span><span>${escapeHtml(event.text)}</span>`;
+  $('#clog').appendChild(item);
+  const markRule = (rule) => document.querySelector(`.rule[data-rule="${rule}"]`).classList.add('on');
+  if (event.kind === 'create') {
+    markRule('isolation');
+    markRule('limits');
   }
-  if (ev.kind === 'sanitize') on('secrets');
-  if (ev.kind === 'destroy') on('destroy');
+  if (event.kind === 'sanitize') markRule('secrets');
+  if (event.kind === 'destroy') markRule('destroy');
 }
 
-// ---------- changes ----------
-function lineDiff(a, b) {
-  const A = a.split('\n');
-  const B = b.split('\n');
-  const n = A.length;
-  const m = B.length;
-  if (n * m > 4_000_000) return B.map((l) => ['a', l]);
-  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-  const out = [];
+// Line diff via longest common subsequence; plugin files are small enough for O(n*m).
+const MAX_DIFF_CELLS = 4_000_000;
+function lineDiff(before, after) {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  if (a.length * b.length > MAX_DIFF_CELLS) return b.map((line) => ['+', line]);
+  const lcs = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  }
+  const rows = [];
   let i = 0;
   let j = 0;
-  while (i < n && j < m) {
-    if (A[i] === B[j]) {
-      out.push([' ', A[i]]);
-      i++;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      rows.push([' ', a[i++]]);
       j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) out.push(['d', A[i++]]);
-    else out.push(['a', B[j++]]);
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) rows.push(['-', a[i++]]);
+    else rows.push(['+', b[j++]]);
   }
-  while (i < n) out.push(['d', A[i++]]);
-  while (j < m) out.push(['a', B[j++]]);
-  return out;
+  while (i < a.length) rows.push(['-', a[i++]]);
+  while (j < b.length) rows.push(['+', b[j++]]);
+  return rows;
 }
 
-function renderChanges(cs) {
-  const files = Object.entries(cs.files);
-  const count = files.length + cs.commands.length;
-  $('#changes-count').textContent = count || '';
-  if (!count) {
-    $('#changes').innerHTML = '<div class="empty">Agen tidak membuat perubahan.</div>';
+function renderChanges(changeset) {
+  const files = Object.entries(changeset.files);
+  const total = files.length + changeset.commands.length;
+  $('#changes-count').textContent = total || '';
+  if (!total) {
+    $('#changes').innerHTML = '<div class="empty">The agent made no changes.</div>';
     return;
   }
-  let html = '';
-  for (const [name, f] of files) {
-    const rows = lineDiff(f.before || '', f.after)
-      .map(([k, l]) => `<div class="${k === 'a' ? 'a' : k === 'd' ? 'd' : ''}">${k === 'a' ? '+ ' : k === 'd' ? '- ' : '  '}${esc(l)}</div>`)
+  const fileBlocks = files.map(([name, file]) => {
+    const rows = lineDiff(file.before || '', file.after)
+      .map(([mark, line]) => `<div class="${mark === '+' ? 'a' : mark === '-' ? 'd' : ''}">${mark} ${escapeHtml(line)}</div>`)
       .join('');
-    html += `<div class="file"><div class="file-head">${esc(name)} <span class="tag ${f.before == null ? '' : 'mod'}">${f.before == null ? 'file baru' : 'diubah'}</span></div><pre class="diff">${rows}</pre></div>`;
-  }
-  if (cs.commands.length) {
-    html += `<h3 class="sub">Perintah WP-CLI yang akan diputar ulang di live</h3><div class="cmds">${cs.commands
-      .map((c) => esc('wp ' + c.args.map((a) => (a.length > 140 ? a.slice(0, 137) + '…' : a)).join(' ')))
-      .join('\n\n')}</div>`;
-  }
-  html += `<p class="note">Saat diterapkan, file di atas ditulis ke plugin kustom situs live dan perintah WP-CLI diputar ulang. Database sandbox tidak pernah disalin ke live.</p>`;
-  $('#changes').innerHTML = html;
+    const isNew = file.before == null;
+    return `<div class="file"><div class="file-head">${escapeHtml(name)} <span class="tag ${isNew ? '' : 'mod'}">${isNew ? 'new file' : 'modified'}</span></div><pre class="diff">${rows}</pre></div>`;
+  });
+  const commands = changeset.commands.length
+    ? `<h3 class="sub">WP-CLI commands replayed on production</h3><div class="cmds">${changeset.commands
+        .map((c) => escapeHtml(`wp ${c.args.map((arg) => (arg.length > 140 ? `${arg.slice(0, 137)}…` : arg)).join(' ')}`))
+        .join('\n\n')}</div>`
+    : '';
+  $('#changes').innerHTML = `${fileBlocks.join('')}${commands}<p class="note">On apply, these files are written to the production custom plugin and the WP-CLI commands are replayed. The sandbox database is never copied to production.</p>`;
 }
 
 $('#live-reload').addEventListener('click', () => ($('#live-frame').src = $('#live-frame').src));
+$('#profile-toggle').addEventListener('click', () => ($('#profile').hidden = !$('#profile').hidden));
 
-init();
+loadState();

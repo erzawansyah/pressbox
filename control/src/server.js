@@ -1,43 +1,60 @@
 // PressBox control plane HTTP servers.
-//   :3000  app (chat UI + JSON API + SSE)
-//   :3001  preview proxy to sandboxes (separate origin from the app on purpose)
+//   :3000  landing page (/), chat app (/app), JSON API and event streams (/api/*)
+//   :3001  preview proxy to sandboxes, deliberately a different origin from the app so
+//          JavaScript running inside a sandbox preview cannot touch the control UI.
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cfg, scriptedMode, usesVultr } from './config.js';
 import { hostOf } from './proc.js';
-import { destroyOrphans, sandboxName } from './sandbox.js';
-import { createTask, runTask, getTask, isBusy, listTasks, taskView, applyTask, discardTask } from './tasks.js';
+import { destroyOrphanSandboxes, sandboxName } from './sandbox.js';
+import { createTask, runTask, getTask, isBusy, listTasks, publicView, applyTask, discardTask } from './tasks.js';
+import { readServerProfile } from './production.js';
 import { listModels } from './llm.js';
+import { accessRequired, authorizeTask, describeSession, getSession, openSession } from './access.js';
 
-const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
-
-const json = (res, code, body) => {
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify(body));
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
 };
+const PAGE_ROUTES = { '/': 'index.html', '/app': 'app.html' };
+const MAX_BODY_BYTES = 64_000;
+const SSE_HEARTBEAT_MS = 15_000;
 
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
+
+// Requiring a JSON content type makes every write endpoint a non-simple request, so a
+// page on another origin (such as a sandbox preview) cannot trigger it without CORS.
 function readJson(req) {
   return new Promise((resolve, reject) => {
-    if (!/application\/json/.test(req.headers['content-type'] || '')) return reject(new Error('Content-Type harus application/json'));
+    if (!/application\/json/.test(req.headers['content-type'] || '')) return reject(new Error('Content-Type must be application/json'));
     let body = '';
-    req.on('data', (c) => {
-      body += c;
-      if (body.length > 64_000) req.destroy();
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) req.destroy();
     });
     req.on('end', () => {
       try {
         resolve(body ? JSON.parse(body) : {});
-      } catch (e) {
-        reject(e);
+      } catch (err) {
+        reject(err);
       }
     });
   });
 }
 
-function state() {
+const sessionToken = (req) => req.headers['x-pressbox-session'] || '';
+
+async function appState(req) {
   return {
     mode: scriptedMode() ? 'scripted' : 'llm',
     provider: usesVultr() ? 'Vultr Serverless Inference' : hostOf(cfg.llm.baseUrl),
@@ -45,112 +62,130 @@ function state() {
     model: cfg.llm.model || null,
     livePublicUrl: cfg.livePublicUrl,
     previewPublicUrl: cfg.previewPublicUrl,
+    repoUrl: cfg.repoUrl,
     pluginSlug: cfg.pluginSlug,
     busy: isBusy(),
+    access: {
+      required: accessRequired(),
+      ownKeyAllowed: cfg.access.allowOwnKey,
+      judgeCodeConfigured: Boolean(cfg.access.judgeCode),
+      session: describeSession(getSession(sessionToken(req))),
+    },
     limits: { memory: cfg.limits.memory, cpus: cfg.limits.cpus, pids: cfg.limits.pids, agentMaxSteps: cfg.limits.agentMaxSteps },
     allowedDomains: cfg.allowedDomains,
+    profile: await readServerProfile(),
     tasks: listTasks(),
   };
 }
 
-const app = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://x');
-  const p = url.pathname;
+function streamEvents(req, res, task, fromSeq) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  task.events.slice(fromSeq).forEach(send);
+  task.listeners.add(send);
+  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), SSE_HEARTBEAT_MS);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    task.listeners.delete(send);
+  });
+}
+
+async function serveStatic(res, file) {
   try {
-    if (req.method === 'GET' && p === '/api/health') return json(res, 200, { ok: true });
-    if (req.method === 'GET' && p === '/api/state') return json(res, 200, state());
-    if (req.method === 'GET' && p === '/api/models') {
-      if (scriptedMode()) return json(res, 200, { models: [], note: 'LLM_API_KEY kosong' });
-      return json(res, 200, { models: await listModels() });
-    }
-    if (req.method === 'POST' && p === '/api/tasks') {
-      const body = await readJson(req);
-      const message = String(body.message || '').trim();
-      if (!message) return json(res, 400, { error: 'Pesan kosong.' });
-      if (isBusy()) return json(res, 409, { error: 'Masih ada permintaan yang dikerjakan. Tunggu selesai dulu.' });
-      const task = createTask(message);
-      runTask(task);
-      return json(res, 201, { id: task.id });
-    }
-    let m = p.match(/^\/api\/tasks\/([a-f0-9]+)(\/(events|apply|discard))?$/);
-    if (m) {
-      const task = getTask(m[1]);
-      if (!task) return json(res, 404, { error: 'Tugas tidak ditemukan.' });
-      const action = m[3];
-      if (!action && req.method === 'GET') return json(res, 200, taskView(task));
-      if (action === 'events' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-        const send = (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
-        const from = Number(url.searchParams.get('from') || 0);
-        task.events.slice(from).forEach(send);
-        task.listeners.add(send);
-        const hb = setInterval(() => res.write(': hb\n\n'), 15000);
-        req.on('close', () => {
-          clearInterval(hb);
-          task.listeners.delete(send);
-        });
-        return;
-      }
-      if (action === 'apply' && req.method === 'POST') {
-        await readJson(req);
-        return json(res, 200, await applyTask(task));
-      }
-      if (action === 'discard' && req.method === 'POST') {
-        await readJson(req);
-        await discardTask(task);
-        return json(res, 200, { ok: true });
-      }
-    }
-    if (req.method === 'GET') {
-      const file = p === '/' ? 'index.html' : p.slice(1);
-      if (!/^[a-z0-9._-]+$/i.test(file)) return json(res, 404, { error: 'not found' });
-      try {
-        const data = await fs.readFile(path.join(PUBLIC, file));
-        res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
-        return res.end(data);
-      } catch {
-        return json(res, 404, { error: 'not found' });
-      }
-    }
-    return json(res, 404, { error: 'not found' });
-  } catch (e) {
-    return json(res, 400, { error: e.message });
+    const content = await fs.readFile(path.join(PUBLIC_DIR, file));
+    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    res.end(content);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+    sendJson(res, 404, { error: 'not found' });
+  }
+}
+
+async function handleApi(req, res, url) {
+  const route = url.pathname;
+  if (req.method === 'GET' && route === '/api/health') return sendJson(res, 200, { ok: true });
+  if (req.method === 'GET' && route === '/api/state') return sendJson(res, 200, await appState(req));
+  if (req.method === 'GET' && route === '/api/models') {
+    return sendJson(res, 200, scriptedMode() ? { models: [], note: 'LLM_API_KEY is not set' } : { models: await listModels() });
+  }
+  if (req.method === 'POST' && route === '/api/session') return sendJson(res, 200, openSession(await readJson(req)));
+  if (req.method === 'POST' && route === '/api/tasks') {
+    const { message = '' } = await readJson(req);
+    if (!message.trim()) return sendJson(res, 400, { error: 'The message is empty.' });
+    if (isBusy()) return sendJson(res, 409, { error: 'Another request is still running. Please wait for it to finish.' });
+    const apiKey = authorizeTask(sessionToken(req));
+    const task = createTask(message.trim(), apiKey);
+    runTask(task);
+    return sendJson(res, 201, { id: task.id });
+  }
+
+  const match = route.match(/^\/api\/tasks\/([a-f0-9]+)(?:\/(events|apply|discard))?$/);
+  if (!match) return sendJson(res, 404, { error: 'not found' });
+  const task = getTask(match[1]);
+  if (!task) return sendJson(res, 404, { error: 'Task not found.' });
+  const action = match[2];
+  if (!action && req.method === 'GET') return sendJson(res, 200, publicView(task));
+  if (action === 'events' && req.method === 'GET') return streamEvents(req, res, task, Number(url.searchParams.get('from') || 0));
+  if (action === 'apply' && req.method === 'POST') {
+    await readJson(req);
+    return sendJson(res, 200, await applyTask(task));
+  }
+  if (action === 'discard' && req.method === 'POST') {
+    await readJson(req);
+    await discardTask(task);
+    return sendJson(res, 200, { ok: true });
+  }
+  return sendJson(res, 405, { error: 'method not allowed' });
+}
+
+const appServer = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  try {
+    if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
+    if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' });
+    if (PAGE_ROUTES[url.pathname]) return await serveStatic(res, PAGE_ROUTES[url.pathname]);
+    const file = url.pathname.slice(1);
+    if (!/^[a-z0-9._-]+$/i.test(file)) return sendJson(res, 404, { error: 'not found' });
+    return await serveStatic(res, file);
+  } catch (err) {
+    return sendJson(res, 400, { error: err.message });
   }
 });
 
 const previewHost = hostOf(cfg.previewPublicUrl);
-const preview = http.createServer((req, res) => {
-  const m = req.url.match(/^\/preview\/([a-f0-9]+)(\/|$|\?)/);
-  if (!m) {
+const previewServer = http.createServer((req, res) => {
+  const match = req.url.match(/^\/preview\/([a-f0-9]+)(\/|$|\?)/);
+  if (!match) {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
-    return res.end('PressBox preview: tidak ada sandbox di alamat ini.');
+    return res.end('PressBox preview: no sandbox at this address.');
   }
-  const task = getTask(m[1]);
-  if (!task || !task.sandbox || !task.sandbox.alive) {
+  const task = getTask(match[1]);
+  if (!task?.sandbox?.alive) {
     res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' });
-    return res.end('<body style="font-family:system-ui;padding:2rem;color:#555"><h2>Sandbox sudah dihancurkan</h2><p>Preview ini tidak tersedia lagi.</p></body>');
+    return res.end('<body style="font-family:system-ui;padding:2rem;color:#555"><h2>This sandbox has been destroyed</h2><p>The preview is no longer available.</p></body>');
   }
-  const up = http.request(
+  const upstream = http.request(
     { host: sandboxName(task), port: 8080, path: req.url, method: req.method, headers: { ...req.headers, host: previewHost } },
-    (ur) => {
-      res.writeHead(ur.statusCode || 502, ur.headers);
-      ur.pipe(res);
+    (sandboxRes) => {
+      res.writeHead(sandboxRes.statusCode || 502, sandboxRes.headers);
+      sandboxRes.pipe(res);
     },
   );
-  up.setTimeout(30000, () => up.destroy(new Error('timeout')));
-  up.on('error', (e) => {
+  upstream.setTimeout(30000, () => upstream.destroy(new Error('timeout')));
+  upstream.on('error', (err) => {
     if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end(`Sandbox tidak merespons: ${e.message}`);
+    res.end(`The sandbox did not respond: ${err.message}`);
   });
-  req.pipe(up);
+  req.pipe(upstream);
 });
 
-const n = await destroyOrphans();
-app.listen(cfg.port, () => {
-  console.log(`[pressbox] app      ${cfg.publicUrl} (listen :${cfg.port})`);
-  console.log(`[pressbox] preview  ${cfg.previewPublicUrl} (listen :${cfg.previewPort})`);
+const orphans = await destroyOrphanSandboxes();
+appServer.listen(cfg.port, () => {
+  console.log(`[pressbox] app      ${cfg.publicUrl} (listening on :${cfg.port})`);
+  console.log(`[pressbox] preview  ${cfg.previewPublicUrl} (listening on :${cfg.previewPort})`);
   console.log(`[pressbox] live     ${cfg.livePublicUrl}`);
-  console.log(`[pressbox] LLM      ${scriptedMode() ? 'MODE SKRIP (LLM_API_KEY kosong)' : `${cfg.llm.baseUrl} model=${cfg.llm.model}`}`);
-  if (n) console.log(`[pressbox] ${n} sandbox yatim dari sesi sebelumnya dihancurkan.`);
+  console.log(`[pressbox] LLM      ${scriptedMode() ? 'SCRIPTED MODE (LLM_API_KEY not set)' : `${cfg.llm.baseUrl} model=${cfg.llm.model}`}`);
+  console.log(`[pressbox] access   ${accessRequired() ? `judge code ${cfg.access.judgeCode ? 'set' : 'NOT SET'}, own keys ${cfg.access.allowOwnKey ? 'allowed' : 'off'}` : 'open (scripted mode)'}`);
+  if (orphans) console.log(`[pressbox] destroyed ${orphans} orphaned sandboxes from a previous run.`);
 });
-preview.listen(cfg.previewPort);
+previewServer.listen(cfg.previewPort);

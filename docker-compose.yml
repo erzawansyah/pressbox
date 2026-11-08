@@ -1,7 +1,7 @@
 name: pressbox
 
 services:
-  # Demo "live" WordPress site (the customer's production site in the story).
+  # Production WordPress managed by PressBox (the demo site: Senja Coffee).
   live:
     build: ./wp
     image: pressbox-wp:latest
@@ -9,6 +9,7 @@ services:
     environment:
       PB_ROLE: live
       PB_HOME: ${LIVE_PUBLIC_URL:-http://localhost:8080}
+      PB_CONTROL_URL: ${PUBLIC_URL:-http://localhost:8300}/app
       LIVE_ADMIN_PASSWORD: ${LIVE_ADMIN_PASSWORD:-senja-demo-2026}
     ports:
       - "8080:8080"
@@ -31,6 +32,8 @@ services:
       LIVE_CONTAINER: pressbox-live
       SANDBOX_IMAGE: pressbox-wp:latest
       SANDBOX_NETWORK: pb_sandbox
+      # The Vultr account key in .env is for provisioning scripts only; the control plane never gets it.
+      VULTR_API_KEY: ""
     ports:
       - "${APP_PORT:-8300}:3000"
       - "${PREVIEW_PORT:-8301}:3001"
