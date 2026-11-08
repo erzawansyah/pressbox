@@ -23,6 +23,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Layout rules like display:flex would otherwise override the hidden attribute. */
+[hidden] { display: none !important; }
 html, body { margin: 0; background: var(--pb-night); color: var(--pb-text); font-family: var(--pb-font); }
 a { color: var(--pb-sky); }
 code, pre { font-family: var(--pb-mono); }

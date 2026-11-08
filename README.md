@@ -1,33 +1,178 @@
-# PressBox
+<p align="center"><img src="control/public/logo.svg" width="72" alt="PressBox logo"></p>
 
-**Chat with your WordPress site. An AI agent does the work in an isolated sandbox on Vultr; you preview the result before it reaches production.**
+<h1 align="center">PressBox</h1>
 
-Built for the [Vultr Agent Rush](https://lablab.build/ai-hackathons/vultr-hackathon) hackathon, Challenge 1: *Blast Radius Zero*.
+<p align="center"><b>Chat with your WordPress site. An AI agent builds the change in a disposable sandbox on Vultr; a deterministic gate and you approve it before it reaches production.</b></p>
 
-> Work in progress. Full documentation (architecture, Vultr usage, containment, demo) is being written.
+<p align="center">Vultr Agent Rush · Challenge 1: <i>Blast Radius Zero</i> · by Ngorbit Lab</p>
 
-## How it works
+| | |
+| --- | --- |
+| **Live demo** | http://149.28.138.40:8300 (landing) · http://149.28.138.40:8300/app (app) |
+| **Production demo site** | http://149.28.138.40:8080 (Senja Coffee, managed by PressBox) |
+| **Judge access code** | in our lablab submission (unlocks the live agent; visitors can also bring their own Vultr Serverless Inference key) |
+| **Stack** | Vultr Cloud Compute · Vultr Serverless Inference (DeepSeek V4.1 Flash) · Docker · WordPress 7.1 + WP-CLI · Node.js (no dependencies) |
 
-1. You ask for a change in plain language ("add a table reservation form to the Contact page").
-2. PressBox clones the production site into a **fresh disposable sandbox** (secrets redacted, no network, CPU/RAM/PID/time limits, non-root, all Linux capabilities dropped).
-3. The agent (LLM on **Vultr Serverless Inference**) edits only the site's single custom plugin and runs allow-listed WP-CLI commands inside the sandbox. It tests the site, reads PHP errors, and fixes its own mistakes. It follows the official [WordPress Agent Skills](https://github.com/WordPress/agent-skills).
-4. A **deterministic gate** (not the model) judges the result: PHP lint, every page renders, no fatal errors, no dangerous functions, no unapproved outbound connections, admin accounts unchanged.
-5. You review a clickable preview and the exact changeset, then **apply to production**: the changeset is replayed after a backup, with automatic rollback. The sandbox database is never copied back.
-6. The sandbox is destroyed.
+---
 
-## Run locally
+## The problem
+
+WordPress runs about 43% of the web (W3Techs), mostly for small businesses and the agencies that look after them. Changing a live site is still risky: a broken plugin update or a hurried code edit takes the site down, and 91% of new WordPress vulnerabilities in 2025 were in plugins (Patchstack). AI site builders generate a site once; after launch, owners are back to plugins, page builders and hoping nothing breaks.
+
+An AI agent that edits a live WordPress site directly would make this worse: it writes and runs PHP on the server that holds customer data.
+
+## What PressBox does
+
+The site owner types a request: *"Add a table reservation form to the Contact page."*
+
+1. **Clone and contain.** PressBox copies production into a fresh Docker container. User passwords, login sessions and secret-looking settings are redacted first. The container has no network route out, no API keys, no Linux capabilities, a non-root user, CPU/RAM/process limits, and the PHP time and memory limits of production.
+2. **Build and self-correct.** The agent (an LLM on **Vultr Serverless Inference**) works only through tools that act inside the sandbox: it edits the site's single custom plugin and runs allow-listed WP-CLI commands. It tests pages, reads the PHP error log, and fixes its own mistakes. It follows the official [WordPress Agent Skills](https://github.com/WordPress/agent-skills).
+3. **Gate.** Deterministic code, not the model, decides whether the result may ship (see [the gate](#the-gate)).
+4. **Preview and approve.** The owner clicks through the sandbox site and reads the exact diff and WP-CLI commands.
+5. **Replay onto production.** After a backup, the changeset is replayed (plugin files written, WP-CLI commands rerun), PHP-linted and health-checked, with automatic rollback. The sandbox database is never copied back, so orders or bookings made meanwhile are never overwritten.
+6. **Destroy.** The sandbox is removed and the removal is verified.
+
+Every feature lands in the site's own custom plugin: one theme, one plugin, no pile of third-party plugins.
+
+## Architecture
+
+![PressBox architecture on Vultr](control/public/architecture.svg)
+
+| Component | Where | Role |
+| --- | --- | --- |
+| Control plane (`control/`) | Vultr VM, container | Chat UI, agent loop (the brain), clone and redaction, sandbox lifecycle, gate, replay to production. Holds the inference key and has internet. **Never executes agent-written code.** |
+| Sandbox (`wp/`, role `sandbox`) | Vultr VM, one container per task | The agent's hands. WordPress + WP-CLI copy of production on an `internal` Docker network. |
+| Production WordPress (`wp/`, role `live`) | Vultr VM, container | The managed site. Ships the **PressBox MU-plugin**. |
+| PressBox MU-plugin (`wp/pb/pressbox-agent.php`) | Inside every managed site | `wp pressbox profile` reports the web server's real PHP profile (via an authenticated loopback, because CLI limits differ). Disables plugin/theme installs and file edits in wp-admin so every change goes through PressBox. |
+| LLM | Vultr Serverless Inference | OpenAI-compatible chat completions with tool calling (`deepseek-v4.1-flash-1017`). |
+
+### How Vultr is used
+
+| Vultr service | Use |
+| --- | --- |
+| **Cloud Compute** (vc2-1c-2gb, Singapore) | Runs the control plane, every sandbox and the production site. Provisioned through the **Vultr API** with [`scripts/provision-vultr.mjs`](scripts/provision-vultr.mjs) and [`scripts/cloud-init.sh`](scripts/cloud-init.sh). |
+| **Serverless Inference** | Every agent LLM call: `POST https://api.vultrinference.com/v1/chat/completions` with tools. The key lives only in the control plane process. |
+
+No other model provider is called at runtime.
+
+## Containment: the four rules
+
+| Rule | Implementation | Code |
+| --- | --- | --- |
+| **1. Process isolation** | One container per task, created by the control plane via the Docker API. `--cap-drop ALL`, `--security-opt no-new-privileges`, `--user 82:82` (www-data), only on the `pb_sandbox` network (`internal: true`: no gateway, so no internet, no `169.254.169.254` metadata endpoint, no route to production). No published ports; previews go through a proxy on a separate origin so sandbox JavaScript cannot touch the control UI. Agent commands run through `docker exec` with argv arrays, never a shell string. | [`sandbox.js`](control/src/sandbox.js), [`docker-compose.yml`](docker-compose.yml) |
+| **2. No credentials in the sandbox** | No environment variables besides the preview URL and PHP limits. Generic `wp-config.php` with per-container salts. Before the copy enters the sandbox: user passwords replaced by invalid hashes, session tokens deleted, options named like `*password*`, `*secret*`, `*token*`, `*api_key*` masked with a marker the gate watches for in outbound traffic. | [`sandbox.js` `redactDatabase`](control/src/sandbox.js), [`wp-config.php`](wp/wp-config.php) |
+| **3. Time and memory limits** | Container: 512 MB RAM (no swap), 1 CPU, 200 PIDs. Per request: PHP memory and `max_execution_time` copied from production's profile. Per command: `timeout -s KILL 30`. Agent: 24 steps, 8-minute task limit, step-budget warning. Review window: 15 minutes, then the sandbox is destroyed. | [`config.js`](control/src/config.js), [`entry.sh`](wp/pb/entry.sh) |
+| **4. Destroyed after every task** | Applied, discarded, blocked, failed or expired: every path calls `docker rm -f` and verifies the container is gone; the log shows how long it lived. Orphans are removed when the control plane starts. | [`tasks.js`](control/src/tasks.js), [`sandbox.js` `destroySandbox`](control/src/sandbox.js) |
+
+Verified on the live VM with `docker inspect` and from inside a sandbox: `CapDrop=[ALL]`, `no-new-privileges`, `Memory=512MiB`, `Pids=200`, no port bindings, network `pb_sandbox` only, no API key in the environment; `curl` to the internet, to `169.254.169.254` and to the production container all fail.
+
+### What the agent can and cannot do
+
+| Can | Cannot |
+| --- | --- |
+| Read/write files inside the custom plugin (`.php .css .js .json .html .svg`) | Touch any path outside it (`..`, absolute paths, other extensions are refused) |
+| `wp post/option/menu/term/widget/rewrite/cache/transient …` | `wp eval`, `db`, `config`, `core`, `plugin install`, `user create`, `--exec`, `--require`, protected options such as `siteurl` or anything secret-looking |
+| Request pages of its sandbox and read new PHP log lines | Reach production, the internet, or the control plane |
+| Read 17 official WordPress Agent Skills guides | Approve its own work |
+
+## The gate
+
+Runs after the agent finishes and judges the **final** state (errors the agent already fixed do not count). All checks must pass before *Apply to production* appears.
+
+- The agent called `finish`, and there is a change to review.
+- `php -l` passes for every plugin file.
+- Static scan: no `eval`/`assert`, system commands, backticks, raw sockets or `curl_exec`, user/role changes, obfuscation (`base64_decode`, `gzinflate`, `str_rot13`), raw `$wpdb->query`, writes to core files.
+- No hard-coded outbound hosts outside the owner-approved list.
+- No PHP extension production lacks (from the MU-plugin profile).
+- Every published page renders with HTTP 200, no critical-error page, within the time limit.
+- No fatal errors while the gate re-renders the site.
+- No outbound connection attempts (recorded by a sandbox-only observer MU-plugin), and no redacted secret in any outbound request.
+- Administrator accounts unchanged; container not OOM-killed.
+
+## Measured results
+
+From end-to-end runs on the Vultr VM and locally, with `deepseek-v4.1-flash-1017`:
+
+| Scenario | Result | Time | Tokens (in / out) |
+| --- | --- | --- | --- |
+| Reservation form on the Contact page | Passed the gate, applied, form saves bookings on production | 34–47 s | 40k–79k / 9k–14k |
+| Exchange rate from an external API | Blocked (unapproved domain; the agent also declined up front) | 20 s | – |
+| Promo banner with a never-ending loop (scripted) | Blocked by the 20 s per-request limit copied from production | 76 s | – |
+| Change the tagline (scripted) | Passed, applied | 9 s | – |
+
+At Vultr's list price for DeepSeek V4 Flash ($0.30 in / $1.00 out per million tokens) a reservation-form task costs about $0.02–0.04.
+
+## Run it
 
 ```bash
-cp .env.example .env   # set LLM_API_KEY (Vultr Serverless Inference) and LLM_MODEL
+cp .env.example .env     # LLM_API_KEY = Vultr Serverless Inference key; set JUDGE_ACCESS_CODE
 docker compose up -d --build
 ```
 
-- PressBox app: http://localhost:8300
-- Demo production site: http://localhost:8080 (wp-admin user `pemilik`)
-- End-to-end test: `node scripts/smoke.mjs all`
+- Landing page: http://localhost:8300 · app: http://localhost:8300/app
+- Production demo site: http://localhost:8080 (wp-admin user `owner`, password from `LIVE_ADMIN_PASSWORD`)
+- Reset the demo site: `sh scripts/reset-live.sh`
 
-Without `LLM_API_KEY` the app runs in clearly labeled scripted mode (pipeline test only).
+Without `LLM_API_KEY` the app runs in **scripted mode**: a stand-in for the LLM replays fixed scenarios so the pipeline can be tested without tokens. The UI shows a banner whenever this is active.
+
+### Deploy on Vultr
+
+```bash
+VULTR_API_KEY=... node scripts/provision-vultr.mjs --ssh-key ~/.ssh/pressbox_vultr.pub
+scp .env root@<ip>:/opt/pressbox/.env          # with PUBLIC_URL etc. set to http://<ip>:port
+ssh root@<ip> 'cd /opt/pressbox && docker compose up -d'
+```
+
+The Vultr account key is only used by the provisioning script; `docker-compose.yml` blanks it for the control plane.
+
+## Tests
+
+```bash
+cd control && npm test                                   # unit tests: path, WP-CLI, static-scan and access policies
+docker compose -f docker-compose.yml -f scripts/compose.scripted.yml up -d
+node scripts/smoke.mjs all --apply                       # end-to-end, scripted mode, no tokens
+PB_JUDGE_CODE=... node scripts/smoke.mjs reservation     # end-to-end with the real LLM
+```
+
+## Repository layout
+
+```
+control/                control plane (Node.js 22, no npm dependencies)
+  src/agent.js          agent loop and system prompt
+  src/tools.js          the agent's tools and their policies
+  src/sandbox.js        clone, redact, create, exec, destroy
+  src/gate.js           deterministic checks
+  src/production.js     server profile, health check, replay with backup and rollback
+  src/access.js         judge code and own-key sessions
+  src/server.js         HTTP API, event stream, preview proxy
+  public/               landing page, app, brand
+  knowledge/            official WordPress Agent Skills (GPL), read by the agent at runtime
+  test/                 unit tests
+wp/                     WordPress image used for production and sandboxes
+  pb/pressbox-agent.php PressBox MU-plugin
+  pb/pb-observer.php    sandbox-only observer of outbound HTTP and fatals
+scripts/                provisioning, smoke tests, demo reset
+```
+
+## Limitations
+
+- The demo uses SQLite so a site is one file to clone; MySQL needs a dump/restore step in the clone path.
+- Replay assumes production did not change the same content while a task was running; there is no conflict detection yet.
+- One task at a time per deployment.
+- Isolation is Docker with dropped capabilities and an internal network; gVisor or microVMs (Vultr VX1 supports nested virtualization) would add a kernel boundary.
+- The demo serves plain HTTP on an IP address.
+
+## Roadmap
+
+- "Deploy a new site" from the app: a Vultr VM per customer site through the Vultr API, managed remotely by the control plane.
+- gVisor runtime, then Microsandbox microVMs on Vultr VX1.
+- Connect existing WordPress sites through the MU-plugin (clone and replay over an authenticated channel).
+- Parallel branches ("give me three versions of the header"), visual diffs with Playwright, MySQL support.
+
+## Business model
+
+Managed WordPress with a built-in agent, sold per site: hosting on Vultr plus chat-driven changes for small businesses, and a multi-site plan for agencies that maintain dozens of client sites. Inference cost per change is measured in cents, so the margin is in the hosting and the safety layer.
 
 ## License
 
-MIT (see `LICENSE`). The files in `control/knowledge/wp-agent-skills/` are from WordPress/agent-skills and remain under their GPL license (see the `NOTICE.md` there).
+MIT (see [`LICENSE`](LICENSE)). `control/knowledge/wp-agent-skills/` contains unmodified files from [WordPress/agent-skills](https://github.com/WordPress/agent-skills) under the GPL (see the `NOTICE.md` there).
