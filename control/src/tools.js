@@ -115,7 +115,13 @@ export function checkWpArgs(args) {
   if (argv[0] === 'wp') argv.shift();
   for (const arg of argv) if (FORBIDDEN_FLAGS.test(arg)) throw new Error(`Flag not allowed: ${arg}`);
 
-  const [group, subcommand = ''] = argv;
+  // Judge positionals separately from flags, so a flag placed early cannot shift the
+  // option name or post ID out of the position the checks look at.
+  const positionals = argv.filter((arg) => !arg.startsWith('-'));
+  const [group, subcommand = ''] = positionals;
+  for (const arg of argv) {
+    if (/^-[^-]/.test(arg)) throw new Error(`Short flags are not allowed: ${arg}`);
+  }
   const isRead = READ_SUBCOMMANDS.has(subcommand) || subcommand.startsWith('is-');
   if (READ_ONLY_GROUPS.has(group)) {
     if (!isRead) throw new Error(`"wp ${group} ${subcommand}" is not allowed (read-only).`);
@@ -124,8 +130,15 @@ export function checkWpArgs(args) {
   if (!WRITE_GROUPS.has(group)) {
     throw new Error(`"wp ${group}" is not allowed. Allowed: ${[...WRITE_GROUPS, ...READ_ONLY_GROUPS].join(', ')}.`);
   }
-  if (group === 'option' && !isRead && PROTECTED_OPTIONS.test(argv[2] || '')) throw new Error(`Option "${argv[2]}" is protected.`);
-  if (group === 'post' && subcommand === 'meta' && /^(_wp_|session)/.test(argv[4] || '')) throw new Error('Internal post meta is protected.');
+  // `wp post create <file>` and `wp post update <id> <file>` read a file from disk; replayed
+  // on production that file could be anything readable there. Only numeric IDs may follow.
+  if (group === 'post' && ['create', 'update'].includes(subcommand)) {
+    const extra = positionals.slice(2).filter((arg) => !/^\d+$/.test(arg));
+    if (extra.length) throw new Error('Pass content with --post_content=…; file arguments are not allowed.');
+  }
+  if (positionals.some((arg) => /^(\/|\.\.?\/|~)/.test(arg) || arg.includes('/proc/'))) throw new Error('Filesystem paths are not allowed in WP-CLI arguments.');
+  if (group === 'option' && !isRead && PROTECTED_OPTIONS.test(positionals[2] || '')) throw new Error(`Option "${positionals[2]}" is protected.`);
+  if (group === 'post' && subcommand === 'meta' && /^(_wp_|session)/.test(positionals[4] || '')) throw new Error('Internal post meta is protected.');
   return { args: argv, mutating: !isRead };
 }
 

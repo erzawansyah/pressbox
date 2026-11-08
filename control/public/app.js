@@ -177,7 +177,7 @@ function startTask(id, message) {
   $('#changes').innerHTML = '<div class="empty">The agent is working…</div>';
   $('#changes-count').textContent = '';
   resetPreview();
-  current.events = new EventSource(`/api/tasks/${id}/events`);
+  current.events = new EventSource(`/api/tasks/${id}/events?session=${encodeURIComponent(readSession())}`);
   current.events.onmessage = (msg) => handleEvent(JSON.parse(msg.data));
 }
 
@@ -321,7 +321,7 @@ async function decide(action, button) {
   const id = current.id;
   button.closest('.actions').querySelectorAll('button').forEach((b) => (b.disabled = true));
   button.textContent = action === 'apply' ? 'Applying…' : 'Discarding…';
-  const followUp = new EventSource(`/api/tasks/${id}/events?from=${current.lastSeq + 1}`);
+  const followUp = new EventSource(`/api/tasks/${id}/events?from=${current.lastSeq + 1}&session=${encodeURIComponent(readSession())}`);
   followUp.onmessage = (msg) => {
     const event = JSON.parse(msg.data);
     current.lastSeq = event.seq;

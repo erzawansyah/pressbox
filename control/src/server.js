@@ -8,8 +8,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cfg, scriptedMode, usesVultr } from './config.js';
 import { hostOf } from './proc.js';
+import { isInSubnet, readSandboxSubnet } from './net.js';
 import { destroyOrphanSandboxes, sandboxName } from './sandbox.js';
-import { createTask, runTask, getTask, isBusy, listTasks, publicView, applyTask, discardTask } from './tasks.js';
+import { createTask, runTask, getTask, isBusy, isTaskOwner, publicView, applyTask, discardTask } from './tasks.js';
 import { readServerProfile } from './production.js';
 import { listModels } from './llm.js';
 import { accessRequired, authorizeTask, describeSession, getSession, openSession } from './access.js';
@@ -52,7 +53,8 @@ function readJson(req) {
   });
 }
 
-const sessionToken = (req) => req.headers['x-pressbox-session'] || '';
+// EventSource cannot send headers, so the event stream takes the session as a query parameter.
+const sessionToken = (req, url) => req.headers['x-pressbox-session'] || url?.searchParams.get('session') || '';
 
 async function appState(req) {
   return {
@@ -74,7 +76,6 @@ async function appState(req) {
     limits: { memory: cfg.limits.memory, cpus: cfg.limits.cpus, pids: cfg.limits.pids, agentMaxSteps: cfg.limits.agentMaxSteps },
     allowedDomains: cfg.allowedDomains,
     profile: await readServerProfile(),
-    tasks: listTasks(),
   };
 }
 
@@ -114,7 +115,7 @@ async function handleApi(req, res, url) {
     if (!message.trim()) return sendJson(res, 400, { error: 'The message is empty.' });
     if (isBusy()) return sendJson(res, 409, { error: 'Another request is still running. Please wait for it to finish.' });
     const apiKey = authorizeTask(sessionToken(req));
-    const task = createTask(message.trim(), apiKey);
+    const task = createTask(message.trim(), apiKey, sessionToken(req));
     runTask(task);
     return sendJson(res, 201, { id: task.id });
   }
@@ -122,7 +123,8 @@ async function handleApi(req, res, url) {
   const match = route.match(/^\/api\/tasks\/([a-f0-9]+)(?:\/(events|apply|discard))?$/);
   if (!match) return sendJson(res, 404, { error: 'not found' });
   const task = getTask(match[1]);
-  if (!task) return sendJson(res, 404, { error: 'Task not found.' });
+  // Unknown and foreign tasks look the same, so task IDs cannot be probed.
+  if (!task || !isTaskOwner(task, sessionToken(req, url))) return sendJson(res, 404, { error: 'Task not found.' });
   const action = match[2];
   if (!action && req.method === 'GET') return sendJson(res, 200, publicView(task));
   if (action === 'events' && req.method === 'GET') return streamEvents(req, res, task, Number(url.searchParams.get('from') || 0));
@@ -138,7 +140,19 @@ async function handleApi(req, res, url) {
   return sendJson(res, 405, { error: 'method not allowed' });
 }
 
+// The control plane joins the sandbox network only so it can reach sandboxes. Nothing may
+// come back the other way: a request from that network is code running in a sandbox, so
+// both servers drop it before any routing happens.
+let sandboxSubnet = null;
+
+function rejectSandboxCaller(req) {
+  if (!isInSubnet(req.socket.remoteAddress, sandboxSubnet)) return false;
+  req.socket.destroy();
+  return true;
+}
+
 const appServer = http.createServer(async (req, res) => {
+  if (rejectSandboxCaller(req)) return;
   const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
@@ -154,6 +168,7 @@ const appServer = http.createServer(async (req, res) => {
 
 const previewHost = hostOf(cfg.previewPublicUrl);
 const previewServer = http.createServer((req, res) => {
+  if (rejectSandboxCaller(req)) return;
   const match = req.url.match(/^\/preview\/([a-f0-9]+)(\/|$|\?)/);
   if (!match) {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -164,10 +179,14 @@ const previewServer = http.createServer((req, res) => {
     res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end('<body style="font-family:system-ui;padding:2rem;color:#555"><h2>This sandbox has been destroyed</h2><p>The preview is no longer available.</p></body>');
   }
+  // Cookies are scoped per host, not per port, so the browser would send production's
+  // wp-admin cookies to the preview port. Strip credentials in both directions.
+  const { cookie, authorization, ...forwardHeaders } = req.headers;
   const upstream = http.request(
-    { host: sandboxName(task), port: 8080, path: req.url, method: req.method, headers: { ...req.headers, host: previewHost } },
+    { host: sandboxName(task), port: 8080, path: req.url, method: req.method, headers: { ...forwardHeaders, host: previewHost } },
     (sandboxRes) => {
-      res.writeHead(sandboxRes.statusCode || 502, sandboxRes.headers);
+      const { 'set-cookie': droppedCookies, ...responseHeaders } = sandboxRes.headers;
+      res.writeHead(sandboxRes.statusCode || 502, responseHeaders);
       sandboxRes.pipe(res);
     },
   );
@@ -178,6 +197,9 @@ const previewServer = http.createServer((req, res) => {
   });
   req.pipe(upstream);
 });
+
+sandboxSubnet = await readSandboxSubnet();
+if (!sandboxSubnet) console.warn('[pressbox] WARNING: sandbox subnet unknown; requests from sandboxes cannot be filtered.');
 
 const orphans = await destroyOrphanSandboxes();
 appServer.listen(cfg.port, () => {

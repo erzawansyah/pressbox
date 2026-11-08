@@ -30,11 +30,14 @@ export function run(cmd, args, { input, timeoutMs = 60000 } = {}) {
 export const docker = (args, opts) => run('docker', args, opts);
 
 // GET with an explicit Host header (WordPress builds URLs from it).
+// Requests look like an ordinary visitor's, so plugin code cannot behave differently for the gate.
+const BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
+
 export function httpGet({ host, port, path, hostHeader, timeoutMs = 25000 }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const req = http.request(
-      { host, port, path, method: 'GET', headers: { Host: hostHeader, 'User-Agent': 'PressBox-Gate/0.1' } },
+      { host, port, path, method: 'GET', headers: { Host: hostHeader, 'User-Agent': BROWSER_USER_AGENT } },
       (res) => {
         const chunks = [];
         let size = 0;

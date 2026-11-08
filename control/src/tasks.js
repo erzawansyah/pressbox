@@ -17,7 +17,6 @@ let runningTaskId = null;
 
 export const getTask = (id) => tasks.get(id);
 export const isBusy = () => runningTaskId !== null;
-export const listTasks = () => [...tasks.values()].map(publicView);
 
 /** What the browser may see: no API keys, timers, or listeners. */
 export function publicView(task) {
@@ -35,11 +34,15 @@ export function publicView(task) {
   };
 }
 
-export function createTask(message, apiKey) {
+/** Only the session that started a task may watch, apply or discard it. */
+export const isTaskOwner = (task, sessionToken) => task.ownerToken === (sessionToken || '');
+
+export function createTask(message, apiKey, ownerToken = '') {
   const task = {
-    id: crypto.randomBytes(5).toString('hex'),
+    id: crypto.randomBytes(8).toString('hex'),
     message: String(message).slice(0, MAX_MESSAGE_CHARS),
     apiKey,
+    ownerToken,
     status: 'queued',
     createdAt: Date.now(),
     events: [],
@@ -123,9 +126,14 @@ export async function applyTask(task) {
   if (task.status !== 'review' || !task.verdict?.pass) throw new Error('Only a task that passed the gate can be applied.');
   clearTimeout(task.ttlTimer);
   setStatus(task, 'applying');
-  const result = await applyToProduction(task, task.log);
-  task.applyResult = result;
+  let result;
+  try {
+    result = await applyToProduction(task, task.log);
+  } catch (err) {
+    result = { ok: false, error: err.message }; // e.g. the backup failed, so nothing was written
+  }
   await destroySandbox(task, result.ok ? 'applied to production' : 'apply failed', task.log);
+  task.applyResult = result;
   if (result.ok) appliedHistory.push({ message: task.message, summary: task.summary });
   setStatus(task, result.ok ? 'applied' : 'apply_failed');
   task.emit('applied', { result });

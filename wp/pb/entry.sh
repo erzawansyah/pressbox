@@ -19,7 +19,8 @@ if [ "$PB_ROLE" = "live" ]; then
   /opt/pb/seed-live.sh
 fi
 
-exec php \
+# PB_ROLE is dropped so plugin code cannot tell a sandbox from production by reading it.
+exec env -u PB_ROLE php \
   -d max_execution_time="${PB_PHP_MAX_EXECUTION_TIME:-20}" \
   -d memory_limit="${PB_PHP_MEMORY_LIMIT:-128M}" \
   -d display_errors=0 \

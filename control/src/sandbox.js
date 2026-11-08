@@ -23,7 +23,7 @@ async function chownRecursive(target, uid, gid) {
 
 // Option names that usually hold credentials. Matching values are replaced before the
 // copy reaches the sandbox; network isolation is the second line of defence for misses.
-const SECRET_OPTION_SQL = ['%password%', '%passwd%', '%secret%', '%server_key%', '%api_key%', '%apikey%', '%token%']
+const SECRET_OPTION_SQL = ['%password%', '%passwd%', '%secret%', '%key%', '%token%', '%credential%', '%license%', '%auth%']
   .map((pattern) => `option_name LIKE '${pattern}'`)
   .join(' OR ');
 

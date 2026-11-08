@@ -40,6 +40,18 @@ test('WP-CLI allow-list separates reads, writes and forbidden commands', () => {
   assert.throws(() => checkWpArgs([]), /array/);
 });
 
+test('WP-CLI arguments cannot read files or dodge checks with early flags', () => {
+  // `post update <id> <file>` would read a file from disk when replayed on production.
+  assert.throws(() => checkWpArgs(['post', 'update', '7', '/proc/self/environ']), /file arguments/);
+  assert.throws(() => checkWpArgs(['post', 'create', 'content.txt']), /file arguments/);
+  assert.equal(checkWpArgs(['post', 'update', '7', '--post_content=<p>Hi</p>']).mutating, true);
+  // A flag placed before the option name must not hide it from the protected-option check.
+  assert.throws(() => checkWpArgs(['option', 'update', '--autoload=no', 'default_role', 'administrator']), /protected/);
+  assert.throws(() => checkWpArgs(['option', 'update', '--autoload=no', 'users_can_register', '1']), /protected/);
+  assert.throws(() => checkWpArgs(['option', 'update', 'blogdescription', '../../etc/passwd']), /Filesystem paths/);
+  assert.throws(() => checkWpArgs(['post', 'list', '-v']), /Short flags/);
+});
+
 test('static scan flags dangerous calls, outbound hosts and extension needs', () => {
   const clean = scanChangedCode({ 'a.php': { after: "<?php echo esc_html( get_bloginfo( 'name' ) );" } });
   assert.deepEqual(clean, { dangerous: [], calledHosts: [], neededExtensions: [] });
@@ -55,6 +67,11 @@ test('static scan flags dangerous calls, outbound hosts and extension needs', ()
   // `curl_exec` must not be mistaken for `exec(`; it is flagged as raw network access instead.
   const curl = scanChangedCode({ 'c.php': { after: '<?php curl_exec( $handle );' } });
   assert.deepEqual(curl.dangerous, ['c.php: raw network access']);
+
+  const urlRead = scanChangedCode({ 'u.php': { after: "<?php $body = file_get_contents( 'https://api.example.com/x' );" } });
+  assert.deepEqual(urlRead.dangerous, ['u.php: URL read outside the WordPress HTTP API']);
+  const localRead = scanChangedCode({ 'l.php': { after: "<?php $tpl = file_get_contents( __DIR__ . '/tpl.html' );" } });
+  assert.deepEqual(localRead.dangerous, []);
 });
 
 test('WordPress core hosts are not treated as agent traffic', () => {

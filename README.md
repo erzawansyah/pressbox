@@ -59,7 +59,7 @@ No other model provider is called at runtime.
 
 | Rule | Implementation | Code |
 | --- | --- | --- |
-| **1. Process isolation** | One container per task, created by the control plane via the Docker API. `--cap-drop ALL`, `--security-opt no-new-privileges`, `--user 82:82` (www-data), only on the `pb_sandbox` network (`internal: true`: no gateway, so no internet, no `169.254.169.254` metadata endpoint, no route to production). No published ports; previews go through a proxy on a separate origin so sandbox JavaScript cannot touch the control UI. Agent commands run through `docker exec` with argv arrays, never a shell string. | [`sandbox.js`](control/src/sandbox.js), [`docker-compose.yml`](docker-compose.yml) |
+| **1. Process isolation** | One container per task, created by the control plane via the Docker API. `--cap-drop ALL`, `--security-opt no-new-privileges`, `--user 82:82` (www-data), only on the `pb_sandbox` network (`internal: true`: no gateway, so no internet, no `169.254.169.254` metadata endpoint, no route to production). No published ports. The control plane joins that network only to reach sandboxes; both of its servers drop any connection that comes *from* the sandbox subnet. Previews go through a proxy on a separate origin that strips cookies and `Authorization` in both directions, so sandbox JavaScript cannot touch the control UI or production's wp-admin session. Agent commands run through `docker exec` with argv arrays, never a shell string. | [`sandbox.js`](control/src/sandbox.js), [`server.js`](control/src/server.js), [`net.js`](control/src/net.js), [`docker-compose.yml`](docker-compose.yml) |
 | **2. No credentials in the sandbox** | No environment variables besides the preview URL and PHP limits. Generic `wp-config.php` with per-container salts. Before the copy enters the sandbox: user passwords replaced by invalid hashes, session tokens deleted, options named like `*password*`, `*secret*`, `*token*`, `*api_key*` masked with a marker the gate watches for in outbound traffic. | [`sandbox.js` `redactDatabase`](control/src/sandbox.js), [`wp-config.php`](wp/wp-config.php) |
 | **3. Time and memory limits** | Container: 512 MB RAM (no swap), 1 CPU, 200 PIDs. Per request: PHP memory and `max_execution_time` copied from production's profile. Per command: `timeout -s KILL 30`. Agent: 24 steps, 8-minute task limit, step-budget warning. Review window: 15 minutes, then the sandbox is destroyed. | [`config.js`](control/src/config.js), [`entry.sh`](wp/pb/entry.sh) |
 | **4. Destroyed after every task** | Applied, discarded, blocked, failed or expired: every path calls `docker rm -f` and verifies the container is gone; the log shows how long it lived. Orphans are removed when the control plane starts. | [`tasks.js`](control/src/tasks.js), [`sandbox.js` `destroySandbox`](control/src/sandbox.js) |
@@ -71,9 +71,9 @@ Verified on the live VM with `docker inspect` and from inside a sandbox: `CapDro
 | Can | Cannot |
 | --- | --- |
 | Read/write files inside the custom plugin (`.php .css .js .json .html .svg`) | Touch any path outside it (`..`, absolute paths, other extensions are refused) |
-| `wp post/option/menu/term/widget/rewrite/cache/transient …` | `wp eval`, `db`, `config`, `core`, `plugin install`, `user create`, `--exec`, `--require`, protected options such as `siteurl` or anything secret-looking |
-| Request pages of its sandbox and read new PHP log lines | Reach production, the internet, or the control plane |
-| Read 17 official WordPress Agent Skills guides | Approve its own work |
+| `wp post/option/menu/term/widget/rewrite/cache/transient …` | `wp eval`, `db`, `config`, `core`, `plugin install`, `user create`, `--exec`, `--require`, short flags, file arguments (`post update 7 <file>`), filesystem paths, protected options such as `siteurl`, `default_role` or anything secret-looking (checked on positionals, so an early flag cannot hide the name) |
+| Request pages of its sandbox and read new PHP log lines | Reach production, the internet, cloud metadata, or the control plane |
+| Read 17 official WordPress Agent Skills guides | Approve its own work, or apply anything: only the browser session that started a task can see, apply or discard it |
 
 ## The gate
 
@@ -81,12 +81,13 @@ Runs after the agent finishes and judges the **final** state (errors the agent a
 
 - The agent called `finish`, and there is a change to review.
 - `php -l` passes for every plugin file.
-- Static scan: no `eval`/`assert`, system commands, backticks, raw sockets or `curl_exec`, user/role changes, obfuscation (`base64_decode`, `gzinflate`, `str_rot13`), raw `$wpdb->query`, writes to core files.
+- Static scan: no `eval`/`assert`, system commands, backticks, raw sockets or `curl_*`, URL reads outside the WordPress HTTP API (`file_get_contents('https://…')`, `fopen`, `readfile`), user/role changes, obfuscation (`base64_decode`, `gzinflate`, `str_rot13`), raw `$wpdb->query`, writes to core files.
 - No hard-coded outbound hosts outside the owner-approved list.
 - No PHP extension production lacks (from the MU-plugin profile).
 - Every published page renders with HTTP 200, no critical-error page, within the time limit.
 - No fatal errors while the gate re-renders the site.
-- No outbound connection attempts (recorded by a sandbox-only observer MU-plugin), and no redacted secret in any outbound request.
+- No outbound connection attempts through the WordPress HTTP API (recorded by a sandbox-only observer MU-plugin), and no redacted secret in any of them. Other ways out are caught by the static scan above; the network blocks all of them either way.
+- The gate requests pages with an ordinary browser user agent and the sandbox does not expose its role to PHP, so plugin code has fewer cues to behave differently under test.
 - Administrator accounts unchanged; container not OOM-killed.
 
 ## Measured results
@@ -96,7 +97,7 @@ From end-to-end runs on the Vultr VM and locally, with `deepseek-v4.1-flash-1017
 | Scenario | Result | Time | Tokens (in / out) |
 | --- | --- | --- | --- |
 | Reservation form on the Contact page | Passed the gate, applied, form saves bookings on production | 34–47 s | 40k–79k / 9k–14k |
-| Exchange rate from an external API | Blocked (unapproved domain; the agent also declined up front) | 20 s | – |
+| Exchange rate from an external API | Blocked: the agent wrote the widget, the gate rejected the unapproved domain, the sandbox was destroyed | 23 s | 35k / 4k |
 | Promo banner with a never-ending loop (scripted) | Blocked by the 20 s per-request limit copied from production | 76 s | – |
 | Change the tagline (scripted) | Passed, applied | 9 s | – |
 
@@ -160,6 +161,8 @@ scripts/                provisioning, smoke tests, demo reset
 - Replay assumes production did not change the same content while a task was running; there is no conflict detection yet.
 - One task at a time per deployment.
 - Isolation is Docker with dropped capabilities and an internal network; gVisor or microVMs (Vultr VX1 supports nested virtualization) would add a kernel boundary.
+- Rollback restores the database snapshot taken just before the apply, so anything written to production during those few seconds is lost; a row-level replay would avoid that.
+- A determined plugin can still guess it is in a sandbox (no network, preview URL). The gate is one layer; the owner's review of the diff and the containment itself are the others.
 - The demo serves plain HTTP on an IP address.
 
 ## Roadmap
@@ -171,7 +174,16 @@ scripts/                provisioning, smoke tests, demo reset
 
 ## Business model
 
-Managed WordPress with a built-in agent, sold per site: hosting on Vultr plus chat-driven changes for small businesses, and a multi-site plan for agencies that maintain dozens of client sites. Inference cost per change is measured in cents, so the margin is in the hosting and the safety layer.
+Managed WordPress with a built-in agent, sold per site: hosting on Vultr plus chat-driven changes for small businesses, and a fleet plan for agencies that maintain dozens of client sites.
+
+Proposed pricing (a hypothesis to validate with customers, not a measured result):
+
+| Plan | Price | What it includes | Our cost at Vultr list prices | Gross margin |
+| --- | --- | --- | --- | --- |
+| Site | $19 / month | 1 site on its own Vultr vc2-1c-1gb VM, 30 agent changes | $5 VM + 30 × ~$0.03 inference ≈ $5.90 | ~69% |
+| Agency | $149 / month | 10 sites, 300 changes, shared review queue | 10 × $5 + 300 × ~$0.03 ≈ $59 | ~60% |
+
+The VM price is Vultr's published $5/month for vc2-1c-1gb; the per-change cost is our measured reservation-form run at the DeepSeek V4 Flash list price.
 
 ## License
 

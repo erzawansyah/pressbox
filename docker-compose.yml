@@ -10,7 +10,7 @@ services:
       PB_ROLE: live
       PB_HOME: ${LIVE_PUBLIC_URL:-http://localhost:8080}
       PB_CONTROL_URL: ${PUBLIC_URL:-http://localhost:8300}/app
-      LIVE_ADMIN_PASSWORD: ${LIVE_ADMIN_PASSWORD:-senja-demo-2026}
+      LIVE_ADMIN_PASSWORD: ${LIVE_ADMIN_PASSWORD:?Set LIVE_ADMIN_PASSWORD in .env}
     ports:
       - "8080:8080"
     volumes:
