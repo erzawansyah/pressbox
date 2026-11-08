@@ -4,3 +4,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# Submission material and the demo video project stay local, out of the public repo.
+docs/
+video/
