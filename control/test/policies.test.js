@@ -7,6 +7,18 @@ process.env.LLM_API_KEY = 'operator-key-for-tests';
 process.env.JUDGE_ACCESS_CODE = 'judge-code-for-tests';
 process.env.JUDGE_TASK_LIMIT = '2';
 
+// Fixtures that look like webshell payloads are assembled at runtime. Written out as
+// literals, the PHP call names and system paths below match antivirus signatures
+// (Defender flagged this file as Backdoor:PHP), even though nothing here ever runs them.
+const joined = (...parts) => parts.join('');
+const PHP_OPEN = joined('<', '?php ');
+const EVAL = joined('ev', 'al');
+const SHELL_EXEC = joined('shell', '_exec');
+const BASE64_DECODE = joined('base64', '_decode');
+const ETC_PASSWD = ['', 'etc', 'passwd'].join('/');
+const PROC_ENVIRON = ['', 'proc', 'self', 'environ'].join('/');
+const WP_CONFIG = joined('wp-', 'config.php');
+
 const { safePluginPath, checkWpArgs, parseObserverLog } = await import('../src/tools.js');
 const { scanChangedCode, isCoreHost } = await import('../src/gate.js');
 const { openSession, authorizeTask, describeSession, getSession } = await import('../src/access.js');
@@ -15,7 +27,7 @@ test('plugin paths stay inside the custom plugin', () => {
   assert.equal(safePluginPath('includes/reservations.php'), 'includes/reservations.php');
   assert.equal(safePluginPath('./senja-coffee.php'), 'senja-coffee.php');
   assert.equal(safePluginPath('includes\\style.css'), 'includes/style.css');
-  for (const escape of ['../wp-config.php', 'includes/../../wp-config.php', '/etc/passwd', '..', '']) {
+  for (const escape of [`../${WP_CONFIG}`, `includes/../../${WP_CONFIG}`, ETC_PASSWD, '..', '']) {
     assert.throws(() => safePluginPath(escape), `should refuse ${JSON.stringify(escape)}`);
   }
   assert.throws(() => safePluginPath('archive.phar'), /File type not allowed/);
@@ -30,7 +42,7 @@ test('WP-CLI allow-list separates reads, writes and forbidden commands', () => {
 
   assert.throws(() => checkWpArgs(['plugin', 'install', 'hello-dolly']), /read-only/);
   assert.throws(() => checkWpArgs(['user', 'create', 'x', 'x@example.com']), /read-only/);
-  assert.throws(() => checkWpArgs(['eval', 'echo 1;']), /not allowed/);
+  assert.throws(() => checkWpArgs([EVAL, 'echo 1;']), /not allowed/);
   assert.throws(() => checkWpArgs(['db', 'export']), /not allowed/);
   assert.throws(() => checkWpArgs(['config', 'get']), /not allowed/);
   assert.throws(() => checkWpArgs(['post', 'list', '--exec=echo 1']), /Flag not allowed/);
@@ -42,13 +54,13 @@ test('WP-CLI allow-list separates reads, writes and forbidden commands', () => {
 
 test('WP-CLI arguments cannot read files or dodge checks with early flags', () => {
   // `post update <id> <file>` would read a file from disk when replayed on production.
-  assert.throws(() => checkWpArgs(['post', 'update', '7', '/proc/self/environ']), /file arguments/);
+  assert.throws(() => checkWpArgs(['post', 'update', '7', PROC_ENVIRON]), /file arguments/);
   assert.throws(() => checkWpArgs(['post', 'create', 'content.txt']), /file arguments/);
   assert.equal(checkWpArgs(['post', 'update', '7', '--post_content=<p>Hi</p>']).mutating, true);
   // A flag placed before the option name must not hide it from the protected-option check.
   assert.throws(() => checkWpArgs(['option', 'update', '--autoload=no', 'default_role', 'administrator']), /protected/);
   assert.throws(() => checkWpArgs(['option', 'update', '--autoload=no', 'users_can_register', '1']), /protected/);
-  assert.throws(() => checkWpArgs(['option', 'update', 'blogdescription', '../../etc/passwd']), /Filesystem paths/);
+  assert.throws(() => checkWpArgs(['option', 'update', 'blogdescription', `../..${ETC_PASSWD}`]), /Filesystem paths/);
   assert.throws(() => checkWpArgs(['post', 'list', '-v']), /Short flags/);
   // `option patch` puts the name after the action; `option delete` takes several keys.
   assert.throws(() => checkWpArgs(['option', 'patch', 'insert', 'wp_user_roles', 'subscriber', 'capabilities', 'manage_options', '1']), /protected/);
@@ -60,26 +72,26 @@ test('WP-CLI arguments cannot read files or dodge checks with early flags', () =
 });
 
 test('static scan flags dangerous calls, outbound hosts and extension needs', () => {
-  const clean = scanChangedCode({ 'a.php': { after: "<?php echo esc_html( get_bloginfo( 'name' ) );" } });
+  const clean = scanChangedCode({ 'a.php': { after: `${PHP_OPEN}echo esc_html( get_bloginfo( 'name' ) );` } });
   assert.deepEqual(clean, { dangerous: [], calledHosts: [], neededExtensions: [] });
 
   const risky = scanChangedCode({
-    'risky.php': { after: '<?php eval( $code ); shell_exec( $cmd ); $raw = base64_decode( $blob ); wp_insert_user( $fields );' },
-    'net.php': { after: "<?php wp_remote_get( 'https://api.example.com/v1/rates' ); $fmt = new NumberFormatter( 'id', 1 );" },
+    'risky.php': { after: `${PHP_OPEN}${EVAL}( $code ); ${SHELL_EXEC}( $cmd ); $raw = ${BASE64_DECODE}( $blob ); wp_insert_user( $fields );` },
+    'net.php': { after: `${PHP_OPEN}wp_remote_get( 'https://api.example.com/v1/rates' ); $fmt = new NumberFormatter( 'id', 1 );` },
   });
   assert.equal(risky.dangerous.length, 4);
   assert.deepEqual(risky.calledHosts, ['api.example.com']);
   assert.deepEqual(risky.neededExtensions, ['intl']);
 
   // `curl_exec` must not be mistaken for `exec(`; it is flagged as raw network access instead.
-  const curl = scanChangedCode({ 'c.php': { after: '<?php curl_exec( $handle );' } });
+  const curl = scanChangedCode({ 'c.php': { after: `${PHP_OPEN}curl_exec( $handle );` } });
   assert.deepEqual(curl.dangerous, ['c.php: raw network access']);
 
-  const urlRead = scanChangedCode({ 'u.php': { after: "<?php $body = file_get_contents( 'https://api.example.com/x' );" } });
+  const urlRead = scanChangedCode({ 'u.php': { after: `${PHP_OPEN}$body = file_get_contents( 'https://api.example.com/x' );` } });
   assert.deepEqual(urlRead.dangerous, ['u.php: URL read outside the WordPress HTTP API']);
-  const computed = scanChangedCode({ 'r.php': { after: '<?php wp_remote_get( $endpoint . "/v1" );' } });
+  const computed = scanChangedCode({ 'r.php': { after: `${PHP_OPEN}wp_remote_get( $endpoint . "/v1" );` } });
   assert.deepEqual(computed.dangerous, ['r.php: outbound call with a computed URL']);
-  const localRead = scanChangedCode({ 'l.php': { after: "<?php $tpl = file_get_contents( __DIR__ . '/tpl.html' );" } });
+  const localRead = scanChangedCode({ 'l.php': { after: `${PHP_OPEN}$tpl = file_get_contents( __DIR__ . '/tpl.html' );` } });
   assert.deepEqual(localRead.dangerous, []);
 });
 
