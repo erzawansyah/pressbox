@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PressBox</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="scripted-banner" class="banner" hidden>
+    MODE SKRIP: agen memutar skenario tetap tanpa LLM, hanya untuk menguji pipeline. Isi <code>LLM_API_KEY</code> Vultr Serverless Inference untuk agen sungguhan.
+  </div>
+  <header class="top">
+    <div class="brand">
+      <span class="logo">▣</span>
+      <div>
+        <strong>PressBox</strong>
+        <span class="tagline">Ngobrol dengan situs WordPress-mu. Agen mengerjakannya di sandbox, kamu lihat hasilnya, baru masuk live.</span>
+      </div>
+    </div>
+    <div class="meta">
+      <span class="pill" id="site-pill">Kedai Kopi Senja</span>
+      <span class="pill" id="llm-pill">…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chat">
+      <div id="thread" class="thread">
+        <div class="hello">
+          <h2>Mau ubah apa di situsmu?</h2>
+          <p>Setiap permintaan dikerjakan di salinan situs yang terisolasi. Situs live baru berubah setelah kamu menyetujuinya.</p>
+        </div>
+      </div>
+      <div class="chips" id="chips">
+        <button data-msg="Tambahkan form reservasi meja di halaman Kontak: nama, nomor WhatsApp, tanggal, jam, dan jumlah orang.">Form reservasi meja</button>
+        <button data-msg="Tampilkan kurs dolar hari ini dari API luar di Beranda.">Widget kurs (API luar)</button>
+        <button data-msg="Pasang banner promo paket kopi di Beranda, harganya diturunkan bertahap sampai di bawah Rp20.000.">Banner promo</button>
+        <button data-msg='Ganti tagline situs jadi "Kopi enak, obrolan hangat".'>Ganti tagline</button>
+      </div>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="2" placeholder="Contoh: tambahkan form reservasi di halaman Kontak"></textarea>
+        <button id="send" type="submit">Kirim</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <nav class="tabs">
+        <button class="tab active" data-tab="preview">Preview sandbox</button>
+        <button class="tab" data-tab="live">Situs live</button>
+        <button class="tab" data-tab="changes">Perubahan <span id="changes-count" class="count"></span></button>
+        <button class="tab" data-tab="containment">Containment</button>
+      </nav>
+      <div class="tabbody">
+        <div class="pane active" id="pane-preview">
+          <div class="urlbar"><span class="dot sbx"></span><span id="preview-url">Belum ada sandbox aktif</span></div>
+          <iframe id="preview-frame" title="Preview sandbox" sandbox="allow-forms allow-scripts allow-same-origin"></iframe>
+          <div id="preview-empty" class="empty">Kirim permintaan untuk membuat sandbox. Preview situs hasil kerja agen muncul di sini.</div>
+        </div>
+        <div class="pane" id="pane-live">
+          <div class="urlbar"><span class="dot live"></span><span id="live-url"></span><button id="live-reload" class="mini">Muat ulang</button></div>
+          <iframe id="live-frame" title="Situs live" sandbox="allow-forms allow-scripts allow-same-origin"></iframe>
+        </div>
+        <div class="pane scroll" id="pane-changes">
+          <div id="changes" class="empty">Belum ada perubahan.</div>
+        </div>
+        <div class="pane scroll" id="pane-containment">
+          <div class="rules" id="rules">
+            <div class="rule" data-rule="isolation"><b>1. Isolasi proses</b><span>Container terpisah per tugas, tanpa capability Linux, user non-root, jaringan internal.</span></div>
+            <div class="rule" data-rule="secrets"><b>2. Tanpa kredensial</b><span>API key tetap di control plane. Data rahasia situs disamarkan sebelum disalin.</span></div>
+            <div class="rule" data-rule="limits"><b>3. Batas waktu &amp; memori</b><span id="limits-text">RAM, CPU, jumlah proses, 20 detik per request, batas langkah agen.</span></div>
+            <div class="rule" data-rule="destroy"><b>4. Dihancurkan tiap tugas</b><span>Sandbox dihapus setelah diterapkan, dibuang, diblokir, atau kedaluwarsa.</span></div>
+          </div>
+          <h3 class="sub">Log containment</h3>
+          <ol id="clog" class="clog"></ol>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

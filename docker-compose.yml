@@ -1,0 +1,54 @@
+name: pressbox
+
+services:
+  # Demo "live" WordPress site (the customer's production site in the story).
+  live:
+    build: ./wp
+    image: pressbox-wp:latest
+    container_name: pressbox-live
+    environment:
+      PB_ROLE: live
+      PB_HOME: ${LIVE_PUBLIC_URL:-http://localhost:8080}
+      LIVE_ADMIN_PASSWORD: ${LIVE_ADMIN_PASSWORD:-senja-demo-2026}
+    ports:
+      - "8080:8080"
+    volumes:
+      - live_wp_content:/var/www/html/wp-content
+    restart: unless-stopped
+
+  # Control plane: chat UI, agent loop (LLM via Vultr Serverless Inference), sandbox orchestration, gate.
+  # It talks to the Docker daemon to create/destroy sandboxes; it never runs agent-written code itself.
+  control:
+    build: ./control
+    container_name: pressbox-control
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8300}
+      PREVIEW_PUBLIC_URL: ${PREVIEW_PUBLIC_URL:-http://localhost:8301}
+      LIVE_PUBLIC_URL: ${LIVE_PUBLIC_URL:-http://localhost:8080}
+      LIVE_CONTAINER: pressbox-live
+      SANDBOX_IMAGE: pressbox-wp:latest
+      SANDBOX_NETWORK: pb_sandbox
+    ports:
+      - "${APP_PORT:-8300}:3000"
+      - "${PREVIEW_PORT:-8301}:3001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+      - pb_sandbox
+    depends_on:
+      - live
+    restart: unless-stopped
+
+networks:
+  # Sandboxes live only here. internal: no gateway, so no internet and no cloud metadata endpoint.
+  # The live site is NOT attached to this network.
+  pb_sandbox:
+    name: pb_sandbox
+    internal: true
+
+volumes:
+  live_wp_content:

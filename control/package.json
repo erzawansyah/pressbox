@@ -1,0 +1,14 @@
+{
+  "name": "pressbox-control",
+  "version": "0.1.0",
+  "description": "PressBox control plane: chat, agent loop, sandbox orchestration, gate, apply to live",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
