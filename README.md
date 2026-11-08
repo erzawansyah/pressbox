@@ -8,8 +8,8 @@
 
 | | |
 | --- | --- |
-| **Live demo** | http://149.28.138.40:8300 (landing) · http://149.28.138.40:8300/app (app) |
-| **Production demo site** | http://149.28.138.40:8080 (Senja Coffee, managed by PressBox) |
+| **Live demo** | https://pressbox.149-28-138-40.sslip.io (landing) · https://pressbox.149-28-138-40.sslip.io/app (app) |
+| **Production demo site** | https://senja.149-28-138-40.sslip.io (Senja Coffee, managed by PressBox) |
 | **Judge access code** | in our lablab submission (unlocks the live agent; visitors can also bring their own Vultr Serverless Inference key) |
 | **Stack** | Vultr Cloud Compute · Vultr Serverless Inference (DeepSeek V4.1 Flash) · Docker · WordPress 7.1 + WP-CLI · Node.js (no dependencies) |
 
@@ -128,6 +128,8 @@ scp .env root@<ip>:/opt/pressbox/.env          # with PUBLIC_URL etc. set to htt
 ssh root@<ip> 'cd /opt/pressbox && docker compose up -d'
 ```
 
+For HTTPS on separate hosts, set `COMPOSE_PROFILES=https`, `APP_HOST`, `PREVIEW_HOST`, `LIVE_HOST` and the matching `https://` values of `PUBLIC_URL`, `PREVIEW_PUBLIC_URL`, `LIVE_PUBLIC_URL` in `.env`. Caddy ([`scripts/Caddyfile`](scripts/Caddyfile)) then gets the certificates. The public demo uses `pressbox.`, `preview.` and `senja.149-28-138-40.sslip.io`. The preview keeps its own host so sandbox JavaScript never shares an origin with the app.
+
 The Vultr account key is only used by the provisioning script; `docker-compose.yml` blanks it for the control plane.
 
 ## Tests
@@ -154,6 +156,7 @@ control/                control plane (Node.js 22, no npm dependencies)
   knowledge/            official WordPress Agent Skills (GPL), read by the agent at runtime
   test/                 unit tests
 wp/                     WordPress image used for production and sandboxes
+  theme/senja/          demo site theme, built on the TailPress boilerplate (Tailwind, MIT)
   pb/pressbox-agent.php PressBox MU-plugin
   pb/pb-observer.php    sandbox-only observer of outbound HTTP and fatals
 scripts/                provisioning, smoke tests, demo reset

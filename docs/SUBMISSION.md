@@ -26,8 +26,8 @@ Business: managed WordPress with the agent built in, proposed at $19 per site pe
 **Tags:** AI agents, sandbox, WordPress, containment, Vultr, code execution.
 
 **Links:**
-- Live demo: http://149.28.138.40:8300 (app: /app)
-- Production demo site: http://149.28.138.40:8080
+- Live demo: https://pressbox.149-28-138-40.sslip.io (app: /app)
+- Production demo site: https://senja.149-28-138-40.sslip.io
 - Repository: https://github.com/erzawansyah/pressbox
 - Judge access code: _(put the code in the private judges field, never in this public file)_
 
