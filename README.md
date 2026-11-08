@@ -100,12 +100,12 @@ From end-to-end runs on the Vultr VM and locally, with `deepseek-v4.1-flash-1017
 
 | Scenario | Result | Time | Tokens (in / out) |
 | --- | --- | --- | --- |
-| Reservation form on the Contact page | Passed the gate, applied, form saves bookings on production | 34–47 s | 40k–79k / 9k–14k |
+| Reservation form on the Contact page | Passed the gate, applied, form saves bookings on production | 34–47 s | 40k–175k / 9k–19k |
 | Exchange rate from an external API | Blocked: the agent wrote the widget, the gate rejected the unapproved domain, the sandbox was destroyed | 23 s | 35k / 4k |
 | Promo banner with a never-ending loop (scripted) | Blocked by the 20 s per-request limit copied from production | 76 s | – |
 | Change the tagline (scripted) | Passed, applied | 9 s | – |
 
-At Vultr's list price for DeepSeek V4 Flash ($0.30 in / $1.00 out per million tokens) a reservation-form task costs about $0.02–0.04.
+At Vultr's list price for DeepSeek V4 Flash ($0.30 in / $1.00 out per million tokens) a reservation-form task costs about $0.02–0.07, depending on how many self-corrections the agent needs.
 
 ## Run it
 
@@ -184,8 +184,8 @@ Proposed pricing (a hypothesis to validate with customers, not a measured result
 
 | Plan | Price | What it includes | Our cost at Vultr list prices | Gross margin |
 | --- | --- | --- | --- | --- |
-| Site | $19 / month | 1 site on its own Vultr vc2-1c-1gb VM, 30 agent changes | $5 VM + 30 × ~$0.03 inference ≈ $5.90 | ~69% |
-| Agency | $149 / month | 10 sites, 300 changes, shared review queue | 10 × $5 + 300 × ~$0.03 ≈ $59 | ~60% |
+| Site | $19 / month | 1 site on its own Vultr vc2-1c-1gb VM, 30 agent changes | $5 VM + 30 × ~$0.05 inference ≈ $6.50 | ~66% |
+| Agency | $149 / month | 10 sites, 300 changes, shared review queue | 10 × $5 + 300 × ~$0.05 ≈ $65 | ~56% |
 
 The VM price is Vultr's published $5/month for vc2-1c-1gb; the per-change cost is our measured reservation-form run at the DeepSeek V4 Flash list price.
 

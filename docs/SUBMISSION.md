@@ -15,9 +15,9 @@ A deterministic gate, not the model, decides whether the result may ship: PHP li
 
 A PressBox MU-plugin ships inside every managed site. It reports the web server's real PHP profile, which becomes the constraint set for sandboxes, the agent and the gate, and it locks plugin installs in wp-admin so every change goes through PressBox: one theme, one plugin, no plugin pile.
 
-Measured on the Vultr VM: a reservation-form request goes from chat to gate-approved preview in 32–47 seconds for about $0.02–0.04 of inference; an external-API request and a runaway loop are both blocked and the sandbox destroyed. The control plane drops any connection from the sandbox network, previews strip cookies, and only the session that started a task can apply it.
+Measured on the Vultr VM: a reservation-form request goes from chat to gate-approved preview in 32–47 seconds for about $0.02–0.07 of inference; an external-API request and a runaway loop are both blocked and the sandbox destroyed. The control plane drops any connection from the sandbox network, previews strip cookies, and only the session that started a task can apply it.
 
-Business: managed WordPress with the agent built in, proposed at $19 per site per month on its own Vultr VM (about 69% gross margin at Vultr list prices) and $149 per month for agencies with 10 sites.
+Business: managed WordPress with the agent built in, proposed at $19 per site per month on its own Vultr VM (about 66% gross margin at Vultr list prices) and $149 per month for agencies with 10 sites.
 
 **Containment moment in the video:** 3:20 (sandbox destroyed after apply) and 3:30 (outbound call blocked, sandbox destroyed, production untouched).
 
