@@ -29,7 +29,7 @@ The site owner types a request: *"Add a table reservation form to the Contact pa
 2. **Build and self-correct.** The agent (an LLM on **Vultr Serverless Inference**) works only through tools that act inside the sandbox: it edits the site's single custom plugin and runs allow-listed WP-CLI commands. It tests pages, reads the PHP error log, and fixes its own mistakes. It follows the official [WordPress Agent Skills](https://github.com/WordPress/agent-skills).
 3. **Gate.** Deterministic code, not the model, decides whether the result may ship (see [the gate](#the-gate)).
 4. **Preview and approve.** The owner clicks through the sandbox site and reads the exact diff and WP-CLI commands.
-5. **Replay onto production.** After a backup, the changeset is replayed (plugin files written, WP-CLI commands rerun), PHP-linted and health-checked, with automatic rollback. The sandbox database is never copied back, so orders or bookings made meanwhile are never overwritten.
+5. **Replay onto production.** After a backup, the plugin is staged and PHP-linted outside the live plugin directory, swapped in with one rename, the WP-CLI commands are rerun and every page is health-checked, with automatic rollback. The sandbox database is never copied back, so orders or bookings made meanwhile are never overwritten.
 6. **Destroy.** The sandbox is removed and the removal is verified.
 
 Every feature lands in the site's own custom plugin: one theme, one plugin, no pile of third-party plugins.
@@ -61,7 +61,7 @@ No other model provider is called at runtime.
 | --- | --- | --- |
 | **1. Process isolation** | One container per task, created by the control plane via the Docker API. `--cap-drop ALL`, `--security-opt no-new-privileges`, `--user 82:82` (www-data), only on the `pb_sandbox` network (`internal: true`: no gateway, so no internet, no `169.254.169.254` metadata endpoint, no route to production). No published ports. The control plane joins that network only to reach sandboxes; both of its servers drop any connection that comes *from* the sandbox subnet. Previews go through a proxy on a separate origin that strips cookies and `Authorization` in both directions, so sandbox JavaScript cannot touch the control UI or production's wp-admin session. Agent commands run through `docker exec` with argv arrays, never a shell string. | [`sandbox.js`](control/src/sandbox.js), [`server.js`](control/src/server.js), [`net.js`](control/src/net.js), [`docker-compose.yml`](docker-compose.yml) |
 | **2. No credentials in the sandbox** | No environment variables besides the preview URL and PHP limits. Generic `wp-config.php` with per-container salts. Before the copy enters the sandbox: user passwords replaced by invalid hashes, session tokens deleted, options named like `*password*`, `*secret*`, `*token*`, `*api_key*` masked with a marker the gate watches for in outbound traffic. | [`sandbox.js` `redactDatabase`](control/src/sandbox.js), [`wp-config.php`](wp/wp-config.php) |
-| **3. Time and memory limits** | Container: 512 MB RAM (no swap), 1 CPU, 200 PIDs. Per request: PHP memory and `max_execution_time` copied from production's profile. Per command: `timeout -s KILL 30`. Agent: 24 steps, 8-minute task limit, step-budget warning. Review window: 15 minutes, then the sandbox is destroyed. | [`config.js`](control/src/config.js), [`entry.sh`](wp/pb/entry.sh) |
+| **3. Time, memory and disk limits** | Container: 512 MB RAM (no swap), 1 CPU, 200 PIDs, read-only root filesystem; the only writable places are a 256 MB tmpfs for `wp-content` and a 64 MB tmpfs for `/tmp`, both charged to the RAM limit, so nothing reaches the host disk. Web PHP runs with `disable_functions` for process spawning and `allow_url_fopen=0`. Per request: PHP memory and `max_execution_time` copied from production's profile. Per command: `timeout -s KILL 30`. Agent: 24 steps, 8-minute task limit, step-budget warning. Review window: 15 minutes, then the sandbox is destroyed. | [`config.js`](control/src/config.js), [`entry.sh`](wp/pb/entry.sh) |
 | **4. Destroyed after every task** | Applied, discarded, blocked, failed or expired: every path calls `docker rm -f` and verifies the container is gone; the log shows how long it lived. Orphans are removed when the control plane starts. | [`tasks.js`](control/src/tasks.js), [`sandbox.js` `destroySandbox`](control/src/sandbox.js) |
 
 Verified on the live VM with `docker inspect` and from inside a sandbox: `CapDrop=[ALL]`, `no-new-privileges`, `Memory=512MiB`, `Pids=200`, no port bindings, network `pb_sandbox` only, no API key in the environment; `curl` to the internet, to `169.254.169.254` and to the production container all fail.
@@ -71,24 +71,28 @@ Verified on the live VM with `docker inspect` and from inside a sandbox: `CapDro
 | Can | Cannot |
 | --- | --- |
 | Read/write files inside the custom plugin (`.php .css .js .json .html .svg`) | Touch any path outside it (`..`, absolute paths, other extensions are refused) |
-| `wp post/option/menu/term/widget/rewrite/cache/transient …` | `wp eval`, `db`, `config`, `core`, `plugin install`, `user create`, `--exec`, `--require`, short flags, file arguments (`post update 7 <file>`), filesystem paths, protected options such as `siteurl`, `default_role` or anything secret-looking (checked on positionals, so an early flag cannot hide the name) |
+| `wp post/option/menu/term/widget/rewrite/cache/transient …` | `wp eval`, `db`, `config`, `core`, `plugin install`, `user create`, `--exec`, `--require`, `--user`, short flags, file arguments (`post update 7 <file>`), filesystem paths, `option patch`/`delete` or any write to protected options such as `siteurl`, `default_role`, `wp_user_roles`, `active_plugins` or anything secret-looking, `post meta patch` and internal meta keys (names are checked on positionals, so an early flag cannot hide them) |
 | Request pages of its sandbox and read new PHP log lines | Reach production, the internet, cloud metadata, or the control plane |
 | Read 17 official WordPress Agent Skills guides | Approve its own work, or apply anything: only the browser session that started a task can see, apply or discard it |
 
 ## The gate
 
-Runs after the agent finishes and judges the **final** state (errors the agent already fixed do not count). All checks must pass before *Apply to production* appears.
+Runs after the agent finishes and judges the **final** state (errors the agent already fixed do not count). Sandboxes run without OPcache, so the agent's tests and the gate always execute the file as it is on disk, never stale bytecode from a version written a second earlier. All checks must pass before *Apply to production* appears.
 
 - The agent called `finish`, and there is a change to review.
 - `php -l` passes for every plugin file.
 - Static scan: no `eval`/`assert`, system commands, backticks, raw sockets or `curl_*`, URL reads outside the WordPress HTTP API (`file_get_contents('https://…')`, `fopen`, `readfile`), user/role changes, obfuscation (`base64_decode`, `gzinflate`, `str_rot13`), raw `$wpdb->query`, writes to core files.
-- No hard-coded outbound hosts outside the owner-approved list.
+- No hard-coded outbound hosts outside the owner-approved list, and no outbound call whose URL is computed at runtime.
 - No PHP extension production lacks (from the MU-plugin profile).
 - Every published page renders with HTTP 200, no critical-error page, within the time limit.
 - No fatal errors while the gate re-renders the site.
 - No outbound connection attempts through the WordPress HTTP API (recorded by a sandbox-only observer MU-plugin), and no redacted secret in any of them. Other ways out are caught by the static scan above; the network blocks all of them either way.
 - The gate requests pages with an ordinary browser user agent and the sandbox does not expose its role to PHP, so plugin code has fewer cues to behave differently under test.
 - Administrator accounts unchanged; container not OOM-killed.
+
+### How it was reviewed
+
+Besides the unit and end-to-end tests, the containment layer went through two adversarial reviews: a code audit and a four-surface review (agent tools, control API, sandbox escape, gate and replay) in which every finding had to survive an independent skeptic. Confirmed findings were fixed and covered by tests: sandbox-to-control-plane access, unauthenticated apply, WP-CLI file arguments and protected-option bypasses (including `option patch`), cookie forwarding through the preview proxy, host-disk writes from sandboxes, and apply without staging.
 
 ## Measured results
 

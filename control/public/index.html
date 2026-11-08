@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PressBox: chat with your WordPress site, safely</title>
-  <meta name="description" content="PressBox lets a site owner change a WordPress site by chatting. An AI agent does the work in a disposable sandbox on Vultr; a deterministic gate and the owner approve it before it reaches production.">
+  <meta name="description" content="PressBox lets a site owner change a live WordPress site by chatting. Every request runs on a clean copy in a disposable sandbox on Vultr; a deterministic gate and the owner approve it before it is replayed onto the live site.">
   <link rel="icon" href="logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="brand.css">
   <link rel="stylesheet" href="landing.css">
@@ -15,78 +15,160 @@
     <nav>
       <a href="#how">How it works</a>
       <a href="#containment">Containment</a>
+      <a href="#proof">Proof</a>
       <a href="#vultr">Built on Vultr</a>
-      <a id="repo-link" href="https://github.com/erzawansyah/pressbox">GitHub</a>
+      <a class="repo-link" href="https://github.com/erzawansyah/pressbox">GitHub</a>
       <a class="pb-button primary small" href="/app">Open the app</a>
     </nav>
   </header>
 
   <main>
     <section class="hero">
-      <p class="pb-kicker">// Vultr Agent Rush · Challenge 1: Blast Radius Zero</p>
-      <h1>Chat with your WordPress site.<br><span class="pb-gradient-text">Nothing reaches production untested.</span></h1>
-      <p class="lead">Ask for a change in plain words. An AI agent builds it inside a disposable sandbox on Vultr, tests it, and fixes its own mistakes. A deterministic gate checks the result, you preview it, and only then is it replayed onto your live site.</p>
-      <div class="cta">
-        <a class="pb-button primary" href="/app">Try the live demo</a>
-        <a class="pb-button" id="live-link" href="#">See the production site</a>
-        <a class="pb-button" href="https://github.com/erzawansyah/pressbox">Read the code</a>
+      <div class="hero-copy">
+        <p class="pb-kicker">// Vultr Agent Rush · Challenge 1: Blast Radius Zero</p>
+        <h1>Chat with your WordPress site.<br><span class="pb-gradient-text">Nothing reaches the live site untested.</span></h1>
+        <p class="lead">Ask for a change in plain words. PressBox makes a clean copy of your site, lets an AI agent build the change inside a disposable sandbox on Vultr, and checks the result with a deterministic gate. You preview it, then <b>Apply to live</b> replays the change after a backup, with automatic rollback.</p>
+        <div class="cta">
+          <a class="pb-button primary" href="/app">Try the live demo</a>
+          <a class="pb-button live-link" href="#">See the live site</a>
+          <a class="pb-button repo-link" href="https://github.com/erzawansyah/pressbox">Read the code</a>
+        </div>
       </div>
-      <div class="chips">
-        <span class="pb-chip">Vultr Cloud Compute</span>
-        <span class="pb-chip">Vultr Serverless Inference</span>
-        <span class="pb-chip">Docker sandboxes</span>
-        <span class="pb-chip">WordPress Agent Skills</span>
-      </div>
+
+      <figure class="hero-demo" aria-label="A change request moving through PressBox">
+        <div class="chat-bubble"><span class="typed" data-text="Add a table reservation form to the Contact page.">Add a table reservation form to the Contact page.</span></div>
+        <ol class="mini-pipeline">
+          <li>Live site</li><li>Clean copy</li><li>Sandbox</li><li>Gate</li><li>Preview</li><li>Apply to live</li>
+        </ol>
+        <figcaption class="mini-status">PASSED the gate · 2 plugin files · 1 WP-CLI command · sandbox destroyed</figcaption>
+      </figure>
     </section>
 
-    <section class="problem">
-      <div class="stat"><strong>43%</strong><span>of all websites run on WordPress (W3Techs).</span></div>
-      <div class="stat"><strong>91%</strong><span>of new WordPress vulnerabilities in 2025 were in plugins (Patchstack).</span></div>
-      <div class="stat"><strong>1 plugin</strong><span>per site with PressBox. Features are written into the site's own custom plugin instead of stacking third-party plugins.</span></div>
+    <section class="problem" aria-label="Why this matters">
+      <div class="stat"><strong>42.6%</strong><span>of all websites run on WordPress (W3Techs).</span></div>
+      <div class="stat"><strong>11,334</strong><span>new WordPress vulnerabilities were reported in 2025 (Patchstack).</span></div>
+      <div class="stat"><strong>91%</strong><span>of them were in plugins. PressBox writes every feature into the site's own custom plugin instead of adding more.</span></div>
     </section>
 
-    <section id="how" class="block">
-      <h2>How it works</h2>
-      <ol class="steps">
-        <li><b>Ask</b><span>"Add a table reservation form to the Contact page."</span></li>
-        <li><b>Clone and contain</b><span>Production is copied into a fresh container: secrets redacted, no network, no keys, CPU/RAM/process/time limits, PHP limits copied from production.</span></li>
-        <li><b>Build and self-correct</b><span>The agent (LLM on Vultr Serverless Inference) edits only the site's custom plugin and runs allow-listed WP-CLI. It reads PHP errors from the sandbox and fixes them. It follows the official WordPress Agent Skills.</span></li>
-        <li><b>Gate</b><span>Code, not the model, decides: PHP lint, every page renders, no fatal errors, no dangerous functions, no outbound calls, PHP extensions match production, admin accounts unchanged.</span></li>
-        <li><b>Preview and approve</b><span>Click through the sandbox site and read the exact diff and WP-CLI commands.</span></li>
-        <li><b>Replay onto production</b><span>Backup first, then the changeset is replayed and health-checked, with automatic rollback. The sandbox database is never copied back. The sandbox is destroyed.</span></li>
-      </ol>
+    <section id="how" class="pipeline">
+      <div class="pipeline-pin">
+        <div class="pipeline-text">
+          <h2>One request, six stages</h2>
+          <ol class="stages">
+            <li class="stage"><b>The live site</b><span>Senja Coffee, a WordPress site with one theme and one custom plugin, managed by the PressBox MU-plugin.</span></li>
+            <li class="stage"><b>A clean copy</b><span>Database and plugin are copied. Passwords are scrambled, login sessions removed, secret settings masked before anything enters the sandbox.</span></li>
+            <li class="stage"><b>A disposable sandbox</b><span>A fresh container with no internet, no keys, no route back to PressBox or the live site, and hard limits.</span></li>
+            <li class="stage"><b>The agent builds and tests</b><span>An LLM on Vultr Serverless Inference reads the official WordPress Agent Skills, writes the feature, places it with WP-CLI, tests the page and fixes its own PHP errors.</span></li>
+            <li class="stage"><b>The gate decides</b><span>Code, not the model: PHP lint, every page renders, no fatal errors, no dangerous functions, no outbound calls, admins unchanged.</span></li>
+            <li class="stage"><b>Preview, then Apply to live</b><span>You click through the sandbox and read the diff. Apply backs up the live site, stages and lints the plugin, replays the change and health-checks every page. The sandbox is destroyed.</span></li>
+          </ol>
+        </div>
+
+        <div class="pipeline-visual" aria-hidden="true">
+          <div class="track">
+            <span class="track-line"><span class="track-fill"></span></span>
+            <span class="node">Live</span><span class="node">Copy</span><span class="node">Sandbox</span><span class="node">Agent</span><span class="node">Gate</span><span class="node">Live</span>
+          </div>
+          <div class="panels">
+            <div class="panel">
+              <p class="panel-title">senja-coffee · production</p>
+              <p class="panel-line">Home · Menu · About · Contact</p>
+              <p class="panel-line">plugins/senja-coffee/senja-coffee.php</p>
+              <p class="panel-line">mu-plugins/pressbox-agent.php</p>
+            </div>
+            <div class="panel">
+              <p class="panel-title">redact before copy</p>
+              <p class="panel-line">user passwords <span class="swap" data-to="scrambled">$wp$2y$10$…</span></p>
+              <p class="panel-line">login sessions <span class="swap" data-to="removed">1 active</span></p>
+              <p class="panel-line">senja_payment_server_key <span class="swap" data-to="PB-REDACTED">live-server-key…</span></p>
+            </div>
+            <div class="panel sandbox-panel">
+              <p class="panel-title">pb-sbx · fresh container</p>
+              <div class="limits"><span>512 MB RAM</span><span>1 CPU</span><span>200 PIDs</span><span>20 s / request</span><span>no network</span><span>no keys</span><span>read-only root</span></div>
+            </div>
+            <div class="panel">
+              <p class="panel-title">agent · deepseek-v4.1-flash</p>
+              <p class="panel-line log">Reading official WordPress guide: plugin-development</p>
+              <p class="panel-line log">Writing includes/reservations.php</p>
+              <p class="panel-line log">wp post update 7 --post_content=…</p>
+              <p class="panel-line log">Testing /?page_id=7 → HTTP 200, clean</p>
+            </div>
+            <div class="panel">
+              <p class="panel-title">gate</p>
+              <p class="panel-line check">PHP syntax valid</p>
+              <p class="panel-line check">Every page renders (HTTP 200)</p>
+              <p class="panel-line check">No dangerous functions</p>
+              <p class="panel-line check">No outbound connections</p>
+              <p class="panel-line check">Administrator accounts unchanged</p>
+            </div>
+            <div class="panel">
+              <p class="panel-title">apply to live</p>
+              <p class="panel-line log">Backup: wp-content/pb-backups/…</p>
+              <p class="panel-line log">Staged, linted, swapped in</p>
+              <p class="panel-line log">Health check: 5 pages HTTP 200</p>
+              <p class="panel-line log destroyed">Sandbox destroyed, verified</p>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section id="containment" class="block">
       <h2>Blast radius: zero</h2>
-      <div class="grid4">
-        <div class="card"><b>Process isolation</b><span>One container per task on an internal Docker network. All Linux capabilities dropped, no-new-privileges, non-root. The control plane never executes agent-written code.</span></div>
-        <div class="card"><b>No credentials inside</b><span>API keys stay in the control plane. User passwords, sessions and secret-looking settings are redacted before the copy enters the sandbox.</span></div>
-        <div class="card"><b>Hard limits</b><span>512 MB RAM, 1 CPU, 200 processes, per-request PHP time and memory copied from production, step and task timeouts for the agent.</span></div>
-        <div class="card"><b>Destroyed every time</b><span>Applied, discarded, blocked, failed or expired: every path ends in <code>docker rm -f</code>, verified and logged. Orphans are removed on restart.</span></div>
+      <div class="wall-demo">
+        <div class="wall-scene" aria-hidden="true">
+          <div class="sandbox-box">
+            <span class="sandbox-label">sandbox</span>
+            <span class="request-arrow"></span>
+            <span class="impact">✕</span>
+          </div>
+          <span class="outside-label">open.er-api.com</span>
+        </div>
+        <ol class="wall-log">
+          <li>Agent wrote <code>includes/exchange-rate.php</code> calling an external API</li>
+          <li><code>cURL error 6: Could not resolve host</code>: the sandbox has no route out</li>
+          <li>Gate: <b>BLOCKED</b>, the domain was never approved</li>
+          <li>Sandbox destroyed; live site untouched</li>
+        </ol>
       </div>
-      <p class="note">The sandbox network has no gateway: no internet, no cloud metadata endpoint, no route to production. When agent code tries to call out, the attempt is logged and the gate blocks the change.</p>
+      <div class="grid4">
+        <div class="card"><b>Process isolation</b><span>One container per task on an internal network, all Linux capabilities dropped, no-new-privileges, non-root, read-only root filesystem. PressBox drops any connection that comes from a sandbox.</span></div>
+        <div class="card"><b>No credentials inside</b><span>API keys stay in the control plane. Passwords, sessions and secret-looking settings are redacted before the clean copy is made.</span></div>
+        <div class="card"><b>Hard limits</b><span>512 MB RAM, 1 CPU, 200 processes, 20 seconds per PHP request, size-capped tmpfs instead of disk, 15-minute review window.</span></div>
+        <div class="card"><b>Destroyed every time</b><span>Applied, discarded, blocked, failed or expired: every path ends with the sandbox and its volumes removed, verified and logged.</span></div>
+      </div>
+    </section>
+
+    <section id="proof" class="block">
+      <h2>What the demo shows</h2>
+      <div class="grid3 proof">
+        <div class="card verdict-pass"><span class="tag">PASSED</span><b>Reservation form</b><span>Built in the sandbox, passed the gate, applied to the live site. The form saves bookings. 32–47 seconds with DeepSeek on Vultr Serverless Inference.</span></div>
+        <div class="card verdict-block"><span class="tag">BLOCKED</span><b>Exchange-rate widget</b><span>The agent wrote it; the call never left the sandbox; the gate rejected the unapproved domain.</span></div>
+        <div class="card verdict-block"><span class="tag">BLOCKED</span><b>A loop that never ends</b><span>Stopped by the 20-second per-request limit copied from the live server, then rejected by the gate.</span></div>
+      </div>
+      <p class="note">Covered by unit tests for every containment policy, four end-to-end scenarios, and two adversarial security reviews whose confirmed findings were fixed. Details in the README.</p>
     </section>
 
     <section id="vultr" class="block">
       <h2>Built on Vultr, end to end</h2>
-      <img class="diagram" src="architecture.svg" alt="Architecture: owner, control plane, disposable sandbox and production WordPress on a Vultr VM; the agent's LLM on Vultr Serverless Inference.">
+      <img class="diagram" src="architecture.svg" alt="Architecture: owner, control plane, disposable sandbox and live WordPress on a Vultr VM; the agent's LLM on Vultr Serverless Inference.">
       <div class="grid3">
-        <div class="card"><b>Vultr Cloud Compute</b><span>The control plane, the sandboxes and the production WordPress run on a Vultr VM, provisioned through the Vultr API.</span></div>
-        <div class="card"><b>Vultr Serverless Inference</b><span>Every agent call goes to an OpenAI-compatible Vultr endpoint (DeepSeek V4.1 Flash). The key never leaves the control plane.</span></div>
-        <div class="card"><b>PressBox MU-plugin</b><span>Ships inside every managed site. Reports the server profile that bounds what a change may use, and locks plugin installs in wp-admin so changes go through PressBox.</span></div>
+        <div class="card"><b>Vultr Cloud Compute</b><span>The control plane, every sandbox and the live WordPress run on a Vultr VM provisioned through the Vultr API.</span></div>
+        <div class="card"><b>Vultr Serverless Inference</b><span>Every agent call goes to an OpenAI-compatible Vultr endpoint. The key never leaves the control plane.</span></div>
+        <div class="card"><b>PressBox MU-plugin</b><span>Ships inside every managed site. Reports the server's real PHP limits, which bound every change, and locks plugin installs in wp-admin.</span></div>
       </div>
     </section>
 
     <section class="block">
-      <h2>Why not just…</h2>
+      <h2>Where PressBox fits</h2>
+      <p class="positioning">Other agents protect a database, suggest fixes, or test an import. PressBox lets a WordPress owner change the <b>live</b> site by chat: every request runs on a clean copy in an isolated sandbox, is judged by a deterministic gate, and is replayed onto the live site with a backup and rollback.</p>
       <div class="compare-wrap"><table class="compare">
         <thead><tr><th></th><th>AI site builders</th><th>WordPress Studio assistant</th><th>Staging site</th><th>PressBox</th></tr></thead>
         <tbody>
           <tr><td>Keeps changing the live site after launch</td><td>No, one-shot generation</td><td>Local sites only</td><td>Manual</td><td>Yes, by chat</td></tr>
           <tr><td>Agent code runs isolated, no secrets</td><td>n/a</td><td>No</td><td>Usually shares server and credentials</td><td>Yes</td></tr>
-          <tr><td>Deterministic gate before production</td><td>No</td><td>No</td><td>Manual QA</td><td>Yes</td></tr>
-          <tr><td>Replayable changeset with rollback</td><td>No</td><td>No</td><td>Manual</td><td>Yes</td></tr>
+          <tr><td>Deterministic gate before the live site</td><td>No</td><td>No</td><td>Manual QA</td><td>Yes</td></tr>
+          <tr><td>Replayable change with rollback</td><td>No</td><td>No</td><td>Manual</td><td>Yes</td></tr>
           <tr><td>No new third-party plugins</td><td>No</td><td>No</td><td>No</td><td>Yes</td></tr>
         </tbody>
       </table></div>
@@ -94,21 +176,22 @@
 
     <section class="block final">
       <h2>See it run</h2>
-      <p>The demo site is Senja Coffee, a small coffee shop. Ask PressBox for a reservation form, watch the agent build and test it in the sandbox (and correct itself when PHP complains), then apply it to production. Judges: the access code is in our lablab submission.</p>
-      <a class="pb-button primary" href="/app">Open PressBox</a>
+      <p>The demo site is Senja Coffee. Ask for a reservation form, watch the agent build and test it in the sandbox, then apply it to the live site. Judges: the access code is in our lablab submission.</p>
+      <div class="cta center">
+        <a class="pb-button primary" href="/app">Open PressBox</a>
+        <a class="pb-button repo-link" href="https://github.com/erzawansyah/pressbox">GitHub repository</a>
+      </div>
     </section>
   </main>
 
   <footer class="footer">
     <span>PressBox by Ngorbit Lab · MIT licensed</span>
-    <a href="https://github.com/erzawansyah/pressbox">github.com/erzawansyah/pressbox</a>
+    <a class="repo-link" href="https://github.com/erzawansyah/pressbox">github.com/erzawansyah/pressbox</a>
   </footer>
-  <script>
-    // Point the production-site links at this deployment's live WordPress.
-    fetch('/api/state').then((r) => r.json()).then((state) => {
-      document.getElementById('live-link').href = state.livePublicUrl + '/';
-      if (state.repoUrl) document.querySelectorAll('a[href^="https://github.com/erzawansyah/pressbox"]').forEach((a) => (a.href = state.repoUrl));
-    }).catch(() => {});
-  </script>
+
+  <!-- GSAP (GreenSock, standard no-charge license), version pinned. The page is complete without it. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" defer></script>
+  <script src="landing.js" defer></script>
 </body>
 </html>

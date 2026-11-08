@@ -194,10 +194,11 @@ function featureScript(task, messages, step, scenario) {
     case 5: {
       const check = lastToolResult(messages);
       const broken = check.critical_error_page || check.http_status >= 500 || check.php_lint_errors?.length || check.timed_out;
-      if (broken && scenario.fixedCode) {
-        return reply('The page fails: the date helper was never defined. Adding it and testing again.', [
-          toolCall('write_file', { path: `includes/${scenario.file}`, content: scenario.fixedCode }),
-        ]);
+      // The first try is broken by design, so the fix is always written; the message reflects
+      // whether this particular check already caught it, keeping the scenario deterministic.
+      if (scenario.fixedCode) {
+        const why = broken ? 'The page fails: the date helper was never defined.' : 'The date helper is still missing.';
+        return reply(`${why} Adding it and testing again.`, [toolCall('write_file', { path: `includes/${scenario.file}`, content: scenario.fixedCode })]);
       }
       return reply(null, [toolCall('finish', { summary: scenario.summary(check) })]);
     }

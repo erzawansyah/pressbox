@@ -31,7 +31,19 @@ fi
 # Runtime guard for code the static scan misses: no process spawning, no URL file reads.
 # Applies to web requests only; WP-CLI keeps its normal php.ini.
 DISABLED_FUNCTIONS=exec,shell_exec,system,passthru,proc_open,popen,pcntl_exec,dl,putenv
+
+# php -S runs as the cli-server SAPI, where OPcache is on (opcache.enable_cli does not apply).
+# A file the agent rewrites within the same second could keep running as stale bytecode, so
+# sandboxes run without OPcache and production revalidates on every request.
+if [ "$PB_ROLE" = "sandbox" ]; then
+  OPCACHE_FLAGS="-d opcache.enable=0"
+else
+  OPCACHE_FLAGS="-d opcache.revalidate_freq=0"
+fi
+
+# shellcheck disable=SC2086  # OPCACHE_FLAGS is intentionally split into two words
 exec env -u PB_ROLE php \
+  $OPCACHE_FLAGS \
   -d disable_functions="$DISABLED_FUNCTIONS" \
   -d allow_url_fopen=0 \
   -d max_execution_time="${PB_PHP_MAX_EXECUTION_TIME:-20}" \
