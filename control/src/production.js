@@ -59,13 +59,22 @@ export async function applyToProduction(task, log) {
   if (res.code !== 0) throw new Error(`Production backup failed, nothing was applied: ${res.stderr}`);
   log('backup', `Production backup created: ${backup} (database and custom plugin).`);
 
+  // Files are written to a staging copy outside wp-content/plugins and linted there, then
+  // swapped in with one rename, so production never loads a half-written or broken plugin.
+  const stage = `${cfg.wpRoot}/wp-content/pb-stage/${task.id}`;
   try {
+    res = await productionExec(['sh', '-c', 'rm -rf "$1" && mkdir -p "$(dirname "$1")" && cp -a "$2" "$1"', 'sh', stage, pluginDir()]);
+    if (res.code !== 0) throw new Error(`Could not stage the plugin: ${res.stderr}`);
     for (const [requested, file] of Object.entries(task.changeset.files)) {
       const relative = safePluginPath(requested);
-      res = await productionExec(['sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', `${pluginDir()}/${relative}`], { input: file.after });
+      res = await productionExec(['sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', `${stage}/${relative}`], { input: file.after });
       if (res.code !== 0) throw new Error(`Could not write ${relative}: ${res.stderr}`);
-      log('apply', `Plugin file written to production: ${relative}`);
     }
+    const stagedLint = await productionExec(['find', stage, '-name', '*.php', '-exec', 'php', '-l', '{}', ';']);
+    if (/error/i.test(stagedLint.stdout.replace(/No syntax errors detected/g, ''))) throw new Error(`PHP lint failed on the staged plugin: ${stagedLint.stdout.slice(0, 300)}`);
+    res = await productionExec(['sh', '-c', 'rm -rf "$2" && mv "$1" "$2"', 'sh', stage, pluginDir()]);
+    if (res.code !== 0) throw new Error(`Could not swap in the staged plugin: ${res.stderr}`);
+    for (const relative of Object.keys(task.changeset.files)) log('apply', `Plugin file live on production: ${relative}`);
     for (const command of task.changeset.commands) {
       // URLs the agent wrote while working on the preview must point at production.
       const { args } = checkWpArgs(command.args.map((arg) => arg.split(previewHome).join(cfg.livePublicUrl)));
@@ -81,6 +90,7 @@ export async function applyToProduction(task, log) {
     return { ok: true, backup };
   } catch (err) {
     log('rollback', `${err.message}. Restoring production from the backup...`);
+    await productionExec(['rm', '-rf', stage]);
     await productionExec([
       'sh', '-c',
       `cp "$1/.ht.sqlite" wp-content/database/.ht.sqlite && rm -rf "wp-content/plugins/${cfg.pluginSlug}" && cp -r "$1/plugin" "wp-content/plugins/${cfg.pluginSlug}"`,

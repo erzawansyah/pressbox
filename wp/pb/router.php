@@ -6,7 +6,7 @@
  * Must stay at top level (no functions around the require) so WordPress runs in global scope.
  */
 
-$pb_docroot = '/var/www/html';
+$pb_docroot = '/srv/wordpress';
 $pb_prefix  = rtrim( (string) parse_url( (string) getenv( 'PB_HOME' ), PHP_URL_PATH ), '/' );
 $pb_uri     = (string) parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH );
 $pb_uri     = rawurldecode( $pb_uri );

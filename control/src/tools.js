@@ -103,7 +103,8 @@ const READ_ONLY_GROUPS = new Set(['plugin', 'theme', 'user', 'comment', 'post-ty
 const WRITE_GROUPS = new Set(['post', 'option', 'menu', 'term', 'widget', 'sidebar', 'rewrite', 'cache', 'transient', 'post-meta']);
 const READ_SUBCOMMANDS = new Set(['list', 'get', 'status', 'exists', 'path', 'search', 'url', 'pluck', 'count']);
 const PROTECTED_OPTIONS = /^(siteurl|home|admin_email|new_admin_email|users_can_register|default_role|active_plugins|template|stylesheet|wp_user_roles|.*(password|passwd|secret|token|api_key|apikey|server_key).*)$/i;
-const FORBIDDEN_FLAGS = /^--(exec|require|path|url|ssh|http|skip-plugins|skip-themes|context)(=|$)/i;
+const FORBIDDEN_FLAGS = /^--(exec|require|path|url|ssh|http|skip-plugins|skip-themes|context|user|prompt)(=|$)/i;
+const PROTECTED_META = /^(_|session)/;
 
 /**
  * Allow-list for WP-CLI. Returns the cleaned argv and whether it changes state; only
@@ -137,8 +138,17 @@ export function checkWpArgs(args) {
     if (extra.length) throw new Error('Pass content with --post_content=…; file arguments are not allowed.');
   }
   if (positionals.some((arg) => /^(\/|\.\.?\/|~)/.test(arg) || arg.includes('/proc/'))) throw new Error('Filesystem paths are not allowed in WP-CLI arguments.');
-  if (group === 'option' && !isRead && PROTECTED_OPTIONS.test(positionals[2] || '')) throw new Error(`Option "${positionals[2]}" is protected.`);
-  if (group === 'post' && subcommand === 'meta' && /^(_wp_|session)/.test(positionals[4] || '')) throw new Error('Internal post meta is protected.');
+  if (group === 'option' && !isRead) {
+    // `option patch <action> <key> …` puts the name at [3]; `option delete` takes several keys.
+    const names = subcommand === 'patch' ? [positionals[3] || ''] : subcommand === 'delete' ? positionals.slice(2) : [positionals[2] || ''];
+    const protectedName = names.find((name) => PROTECTED_OPTIONS.test(name));
+    if (protectedName !== undefined) throw new Error(`Option "${protectedName}" is protected.`);
+  }
+  if (group === 'post' && subcommand === 'meta') {
+    // `post meta <action> <id> <key> …`; patch edits serialized structures, so it is refused.
+    if (positionals[2] === 'patch' || PROTECTED_META.test(positionals[4] || '')) throw new Error('Internal or structured post meta is protected.');
+  }
+  if (group === 'post-meta') throw new Error('Use "wp post meta …" instead.');
   return { args: argv, mutating: !isRead };
 }
 
@@ -206,6 +216,8 @@ export async function executeTool(task, name, input) {
     }
     case 'check_site': {
       const requestPath = input.path || '/';
+      // The UI reuses this path for the production iframe; anything but a site-relative path could change its origin.
+      if (!/^\/(?![/\\])/.test(requestPath)) return { error: 'Path must start with a single "/", e.g. "/?page_id=7".' };
       const lintErrors = await lintPlugin(task);
       const page = await sandboxHttp(task, requestPath);
       const phpLog = await readNewLines(task, '/tmp/wp-debug.log');

@@ -50,6 +50,13 @@ test('WP-CLI arguments cannot read files or dodge checks with early flags', () =
   assert.throws(() => checkWpArgs(['option', 'update', '--autoload=no', 'users_can_register', '1']), /protected/);
   assert.throws(() => checkWpArgs(['option', 'update', 'blogdescription', '../../etc/passwd']), /Filesystem paths/);
   assert.throws(() => checkWpArgs(['post', 'list', '-v']), /Short flags/);
+  // `option patch` puts the name after the action; `option delete` takes several keys.
+  assert.throws(() => checkWpArgs(['option', 'patch', 'insert', 'wp_user_roles', 'subscriber', 'capabilities', 'manage_options', '1']), /protected/);
+  assert.throws(() => checkWpArgs(['option', 'delete', 'blogdescription', 'active_plugins']), /protected/);
+  assert.throws(() => checkWpArgs(['post', 'update', '7', '--post_status=publish', '--user=1']), /Flag not allowed/);
+  assert.throws(() => checkWpArgs(['post', 'meta', 'update', '7', '_wp_page_template', 'x.php']), /protected/);
+  assert.throws(() => checkWpArgs(['post', 'meta', 'patch', 'insert', '7', 'senja_hours', 'mon', '9']), /protected/);
+  assert.equal(checkWpArgs(['post', 'meta', 'update', '7', 'senja_phone', '0812']).mutating, true);
 });
 
 test('static scan flags dangerous calls, outbound hosts and extension needs', () => {
@@ -70,6 +77,8 @@ test('static scan flags dangerous calls, outbound hosts and extension needs', ()
 
   const urlRead = scanChangedCode({ 'u.php': { after: "<?php $body = file_get_contents( 'https://api.example.com/x' );" } });
   assert.deepEqual(urlRead.dangerous, ['u.php: URL read outside the WordPress HTTP API']);
+  const computed = scanChangedCode({ 'r.php': { after: '<?php wp_remote_get( $endpoint . "/v1" );' } });
+  assert.deepEqual(computed.dangerous, ['r.php: outbound call with a computed URL']);
   const localRead = scanChangedCode({ 'l.php': { after: "<?php $tpl = file_get_contents( __DIR__ . '/tpl.html' );" } });
   assert.deepEqual(localRead.dangerous, []);
 });
@@ -86,20 +95,23 @@ test('observer log parsing skips partial lines', () => {
   assert.deepEqual(entries, [{ type: 'http', url: 'https://x.example' }]);
 });
 
-test('judge code unlocks a shared quota; own keys stay per session', () => {
-  assert.throws(() => openSession({ code: 'wrong' }), /not valid/);
-  assert.throws(() => openSession({}), /access code/);
+test('judge code unlocks a shared quota; own keys stay per session', async () => {
+  const acceptKey = async () => true;
+  const rejectKey = async () => false;
+  await assert.rejects(() => openSession({ code: 'wrong' }), /not valid/);
+  await assert.rejects(() => openSession({}), /access code/);
   assert.throws(() => authorizeTask('no-such-session'), /Unlock/);
 
-  const judge = openSession({ code: 'judge-code-for-tests' });
+  const judge = await openSession({ code: 'judge-code-for-tests' });
   assert.equal(judge.kind, 'judge');
   assert.equal(authorizeTask(judge.token), 'operator-key-for-tests');
   assert.equal(authorizeTask(judge.token), 'operator-key-for-tests');
   assert.throws(() => authorizeTask(judge.token), /quota/);
   assert.equal(describeSession(getSession(judge.token)).remaining, 0);
 
-  assert.throws(() => openSession({ apiKey: 'short' }), /API key/);
-  const own = openSession({ apiKey: 'VISITOR0OWN0KEY0ABCDEFGHIJKLMNOP' });
+  await assert.rejects(() => openSession({ apiKey: 'short' }, acceptKey), /API key/);
+  await assert.rejects(() => openSession({ apiKey: 'MADE0UP0KEY0ABCDEFGHIJKLMNOPQRS' }, rejectKey), /did not accept/);
+  const own = await openSession({ apiKey: 'VISITOR0OWN0KEY0ABCDEFGHIJKLMNOP' }, acceptKey);
   assert.equal(own.kind, 'own-key');
   assert.equal(own.apiKey, undefined, 'the key must never be echoed back to the browser');
   assert.equal(authorizeTask(own.token), 'VISITOR0OWN0KEY0ABCDEFGHIJKLMNOP');

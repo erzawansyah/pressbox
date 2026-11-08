@@ -181,6 +181,9 @@ function startTask(id, message) {
   current.events.onmessage = (msg) => handleEvent(JSON.parse(msg.data));
 }
 
+// Agent-chosen paths are appended to trusted origins; only a single-slash relative path is kept.
+const siteRelativePath = (path) => (/^\/(?![/\\])/.test(String(path)) ? String(path) : '/');
+
 function addStep(html, className = '') {
   const item = document.createElement('li');
   item.className = `step ${className}`;
@@ -195,10 +198,25 @@ function setStatus(status) {
   const badge = $('.status', current.card);
   badge.textContent = text;
   badge.className = `status ${tone}`;
+  if (status !== 'agent') clearThinking();
   if (FINAL_STATUSES.includes(status)) {
     current.events?.close();
     setBusy(false);
   }
+}
+
+function clearThinking() {
+  current.thinking?.remove();
+  current.thinking = null;
+}
+
+// Replaces the Apply/Discard buttons and their "not changed yet" note with the outcome.
+function settleDecision(html) {
+  const verdictBox = $('.verdict', current.card);
+  if (!verdictBox) return;
+  verdictBox.querySelector('.actions')?.remove();
+  verdictBox.querySelector('.note')?.remove();
+  verdictBox.insertAdjacentHTML('beforeend', html);
 }
 
 function handleEvent(event) {
@@ -222,7 +240,7 @@ function handleEvent(event) {
       current.thinking?.remove();
       const item = addStep(`<span class="ic"><span class="spin"></span></span><span><div class="lbl">${escapeHtml(event.label)}</div><div class="res"></div></span>`);
       current.steps.set(event.id, item);
-      if (event.name === 'check_site' && event.input?.path) current.previewPath = event.input.path;
+      if (event.name === 'check_site' && event.input?.path) current.previewPath = siteRelativePath(event.input.path);
       break;
     }
     case 'tool_end':
@@ -336,7 +354,7 @@ async function decide(action, button) {
   if (action === 'apply') {
     renderApplied(result);
   } else {
-    button.closest('.actions').insertAdjacentHTML('afterend', '<div class="note">Discarded. Production is unchanged.</div>');
+    settleDecision('<div class="note">Discarded. Production is unchanged.</div>');
     showSandboxGone();
   }
 }
@@ -344,13 +362,12 @@ async function decide(action, button) {
 function renderApplied(result) {
   if (!result || current.appliedShown) return;
   current.appliedShown = true;
-  const slot = $('.slot-verdict', current.card);
   if (result.ok) {
-    slot.insertAdjacentHTML('beforeend', `<div class="note">✓ Applied to production. Backup: <code>${escapeHtml(result.backup)}</code></div>`);
+    settleDecision(`<div class="note">✓ Applied to production. Backup: <code>${escapeHtml(result.backup)}</code></div>`);
     $('#live-frame').src = appState.livePublicUrl + current.previewPath;
     showTab('live');
   } else {
-    slot.insertAdjacentHTML('beforeend', `<div class="error-box">Apply failed: ${escapeHtml(result.error)}. Production was restored from the backup.</div>`);
+    settleDecision(`<div class="error-box">Apply failed: ${escapeHtml(result.error)}. Production was restored from the backup.</div>`);
   }
   showSandboxGone();
 }

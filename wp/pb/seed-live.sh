@@ -2,7 +2,7 @@
 # Seeds the demo production site (Senja Coffee) once; later boots are a no-op.
 # Runs as www-data inside the live container.
 set -e
-cd /var/www/html
+cd /srv/wordpress
 
 if wp core is-installed >/dev/null 2>&1; then
   echo "[seed] Site already installed, skipping seed."

@@ -52,6 +52,8 @@ export function scanChangedCode(files) {
   for (const [file, { after: code }] of Object.entries(files)) {
     for (const [pattern, label] of DANGEROUS_PATTERNS) if (pattern.test(code)) dangerous.push(`${file}: ${label}`);
     for (const match of code.matchAll(/wp_(?:safe_)?remote_(?:get|post|request|head)\s*\(\s*['"]([^'"]+)['"]/g)) calledHosts.add(hostname(match[1]));
+    // A URL built at runtime cannot be checked against the approved domains, so it is refused.
+    if (/\bwp_(?:safe_)?remote_(?:get|post|request|head)\s*\(\s*[^'"\s]/.test(code)) dangerous.push(`${file}: outbound call with a computed URL`);
     for (const [extension, pattern] of Object.entries(EXTENSION_USAGE)) if (pattern.test(code)) neededExtensions.add(extension);
   }
   return { dangerous, calledHosts: [...calledHosts], neededExtensions: [...neededExtensions] };

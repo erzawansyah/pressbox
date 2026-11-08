@@ -19,7 +19,7 @@ export const cfg = {
   workDir: env.WORK_DIR || '/work',
 
   pluginSlug: env.PLUGIN_SLUG || 'senja-coffee',
-  wpRoot: '/var/www/html',
+  wpRoot: '/srv/wordpress',
 
   // Any OpenAI-compatible endpoint works; the hackathon build uses Vultr Serverless Inference.
   llm: {
@@ -42,6 +42,8 @@ export const cfg = {
     memory: env.SANDBOX_MEMORY || '512m',
     cpus: env.SANDBOX_CPUS || '1',
     pids: Number(env.SANDBOX_PIDS || 200),
+    contentDisk: env.SANDBOX_CONTENT_DISK || '256m',
+    tmpDisk: env.SANDBOX_TMP_DISK || '64m',
     cmdTimeoutSec: Number(env.SANDBOX_CMD_TIMEOUT || 30),
     httpTimeoutMs: Number(env.SANDBOX_HTTP_TIMEOUT_MS || 25000),
     agentMaxSteps: Number(env.AGENT_MAX_STEPS || 24),

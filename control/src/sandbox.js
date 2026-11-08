@@ -10,6 +10,7 @@ import { docker, run, httpGet, hostOf, sleep } from './proc.js';
 const WWW_DATA_UID = 82; // www-data in the alpine WordPress image
 const READY_POLL_MS = 500;
 const READY_ATTEMPTS = 30;
+const UNUSED_VOLUME_TMPFS = '64k';
 
 export const sandboxName = (task) => `pb-sbx-${task.id}`;
 export const previewHome = (task) => `${cfg.previewPublicUrl}/preview/${task.id}`;
@@ -82,7 +83,17 @@ export async function createSandbox(task, log) {
   const phpMemory = task.profile?.php_memory_limit || '128M';
   const phpMaxSeconds = task.profile?.max_execution_time || 20;
 
+  // Nothing a sandbox writes may land on the host disk: the root filesystem is read-only and
+  // the only writable places are size-capped tmpfs mounts, charged to the container's RAM limit.
+  const contentVolume = contentVolumeName(task);
   let res = await docker([
+    'volume', 'create', '--label', 'pressbox=sandbox', '--driver', 'local',
+    '--opt', 'type=tmpfs', '--opt', 'device=tmpfs', '--opt', `o=size=${limits.contentDisk},uid=${WWW_DATA_UID},gid=${WWW_DATA_UID}`,
+    contentVolume,
+  ]);
+  if (res.code !== 0) throw new Error(`Could not create the sandbox volume: ${res.stderr}`);
+
+  res = await docker([
     'create',
     '--name', name,
     '--label', 'pressbox=sandbox',
@@ -95,6 +106,14 @@ export async function createSandbox(task, log) {
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
     '--user', `${WWW_DATA_UID}:${WWW_DATA_UID}`,
+    '--read-only',
+    '--tmpfs', `/tmp:rw,size=${limits.tmpDisk},mode=1777`,
+    // The base image declares /var/www/html a VOLUME; a tiny tmpfs keeps Docker from
+    // creating a writable anonymous volume on the host disk there.
+    '--tmpfs', `/var/www/html:ro,size=${UNUSED_VOLUME_TMPFS}`,
+    '-v', `${contentVolume}:${cfg.wpRoot}/wp-content`,
+    '-e', 'HOME=/tmp',
+    '-e', 'WP_CLI_CACHE_DIR=/tmp/wp-cli-cache',
     '-e', 'PB_ROLE=sandbox',
     '-e', `PB_HOME=${home}`,
     '-e', `PB_PHP_MEMORY_LIMIT=${phpMemory}`,
@@ -104,26 +123,33 @@ export async function createSandbox(task, log) {
   if (res.code !== 0) throw new Error(`Could not create the sandbox: ${res.stderr}`);
   task.sandbox = { name, home, createdAt: Date.now(), alive: true };
 
+  res = await docker(['start', name]);
+  if (res.code !== 0) throw new Error(`Could not start the sandbox: ${res.stderr}`);
+  await waitFor(async () => (await sandboxExec(task, ['test', '-f', '/tmp/pb-seeded'], { timeoutSec: 5 })).code === 0, 'seed its wp-content');
+
   const target = `${name}:${cfg.wpRoot}/wp-content`;
   res = await docker(['cp', '-a', path.join(task.workDir, 'db.sqlite'), `${target}/database/.ht.sqlite`]);
   if (res.code !== 0) throw new Error(`Could not load the database into the sandbox: ${res.stderr}`);
   res = await docker(['cp', '-a', path.join(task.workDir, 'plugin'), `${target}/plugins/${cfg.pluginSlug}`]);
   if (res.code !== 0) throw new Error(`Could not load the plugin into the sandbox: ${res.stderr}`);
-  res = await docker(['start', name]);
-  if (res.code !== 0) throw new Error(`Could not start the sandbox: ${res.stderr}`);
 
   log(
     'create',
-    `Sandbox ${name} started on network "${cfg.sandboxNetwork}" (internal: no internet, no cloud metadata, no route to production). ` +
-      `RAM ${limits.memory}, ${limits.cpus} CPU, max ${limits.pids} processes, all Linux capabilities dropped, non-root user, no API keys. ` +
-      `PHP limits copied from production: ${phpMemory} memory, ${phpMaxSeconds}s per request.`,
+    `Sandbox ${name} started on network "${cfg.sandboxNetwork}" (internal: no internet, no cloud metadata, no route to production or PressBox). ` +
+      `RAM ${limits.memory}, ${limits.cpus} CPU, max ${limits.pids} processes, all Linux capabilities dropped, non-root user, no API keys, ` +
+      `read-only root filesystem with ${limits.contentDisk} + ${limits.tmpDisk} tmpfs. PHP limits copied from production: ${phpMemory} memory, ${phpMaxSeconds}s per request.`,
   );
+  await waitFor(async () => (await sandboxHttp(task, '/')).status > 0, 'answer HTTP');
+}
 
+const contentVolumeName = (task) => `${sandboxName(task)}-content`;
+
+async function waitFor(isReady, what) {
   for (let attempt = 0; attempt < READY_ATTEMPTS; attempt++) {
-    if ((await sandboxHttp(task, '/')).status > 0) return;
+    if (await isReady()) return;
     await sleep(READY_POLL_MS);
   }
-  throw new Error('The sandbox did not answer within 15 seconds.');
+  throw new Error(`The sandbox did not ${what} within ${(READY_ATTEMPTS * READY_POLL_MS) / 1000} seconds.`);
 }
 
 export function sandboxExec(task, argv, { input, timeoutSec = cfg.limits.cmdTimeoutSec, workdir = cfg.wpRoot } = {}) {
@@ -166,7 +192,8 @@ export async function destroySandbox(task, reason, log) {
   task.sandbox.alive = false;
   clearTimeout(task.ttlTimer);
   const name = sandboxName(task);
-  await docker(['rm', '-f', name]);
+  await docker(['rm', '-f', '-v', name]);
+  await docker(['volume', 'rm', '-f', contentVolumeName(task)]);
   const leftover = await docker(['ps', '-a', '-q', '--filter', `name=^${name}$`]);
   const gone = leftover.stdout.trim() === '';
   const seconds = Math.round((Date.now() - task.sandbox.createdAt) / 1000);
@@ -178,6 +205,8 @@ export async function destroySandbox(task, reason, log) {
 export async function destroyOrphanSandboxes() {
   const res = await docker(['ps', '-a', '-q', '--filter', 'label=pressbox=sandbox']);
   const ids = res.stdout.split('\n').filter(Boolean);
-  if (ids.length) await docker(['rm', '-f', ...ids]);
+  if (ids.length) await docker(['rm', '-f', '-v', ...ids]);
+  const volumes = (await docker(['volume', 'ls', '-q', '--filter', 'label=pressbox=sandbox'])).stdout.split('\n').filter(Boolean);
+  if (volumes.length) await docker(['volume', 'rm', '-f', ...volumes]);
   return ids.length;
 }

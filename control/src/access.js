@@ -18,18 +18,45 @@ function sameSecret(a, b) {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
-export function openSession({ code, apiKey }) {
+/**
+ * Opens a session from a judge code or a visitor's own key. An own key is tried with a
+ * one-token completion first, so a made-up key cannot occupy the single task slot.
+ * `verifyKey` is injectable for tests.
+ */
+export async function openSession({ code, apiKey }, verifyKey = verifyInferenceKey) {
   if (code) {
     if (!cfg.access.judgeCode || !sameSecret(code.trim(), cfg.access.judgeCode)) throw new Error('That access code is not valid.');
     return createSession({ kind: 'judge' });
   }
   if (apiKey) {
     if (!cfg.access.allowOwnKey) throw new Error('Own keys are disabled on this deployment.');
-    if (!/^[A-Za-z0-9_\-.]{20,200}$/.test(apiKey.trim())) throw new Error('That does not look like an API key.');
-    return createSession({ kind: 'own-key', apiKey: apiKey.trim() });
+    const key = apiKey.trim();
+    if (!/^[A-Za-z0-9_\-.]{20,200}$/.test(key)) throw new Error('That does not look like an API key.');
+    if (!(await verifyKey(key))) throw new Error('Vultr Serverless Inference did not accept that key.');
+    return createSession({ kind: 'own-key', apiKey: key });
   }
   throw new Error('Enter an access code or your own Vultr Serverless Inference key.');
 }
+
+async function verifyInferenceKey(key) {
+  try {
+    const res = await fetch(`${cfg.llm.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: cfg.llm.model, messages: [{ role: 'user', content: 'ok' }], max_tokens: 1 }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    return res.ok;
+  } catch {
+    return false; // network failure or timeout: treat as not verified
+  }
+}
+
+const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, session] of sessions) if (session.expiresAt < now) sessions.delete(token);
+}, SWEEP_INTERVAL_MS).unref();
 
 function createSession(fields) {
   const token = crypto.randomBytes(24).toString('hex');

@@ -109,7 +109,7 @@ async function handleApi(req, res, url) {
   if (req.method === 'GET' && route === '/api/models') {
     return sendJson(res, 200, scriptedMode() ? { models: [], note: 'LLM_API_KEY is not set' } : { models: await listModels() });
   }
-  if (req.method === 'POST' && route === '/api/session') return sendJson(res, 200, openSession(await readJson(req)));
+  if (req.method === 'POST' && route === '/api/session') return sendJson(res, 200, await openSession(await readJson(req)));
   if (req.method === 'POST' && route === '/api/tasks') {
     const { message = '' } = await readJson(req);
     if (!message.trim()) return sendJson(res, 400, { error: 'The message is empty.' });

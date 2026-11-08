@@ -14,7 +14,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - live_wp_content:/var/www/html/wp-content
+      - live_wp_content:/srv/wordpress/wp-content
     restart: unless-stopped
 
   # Control plane: chat UI, agent loop (LLM via Vultr Serverless Inference), sandbox orchestration, gate.
